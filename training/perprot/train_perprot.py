@@ -78,7 +78,7 @@ def add_args(parser):
         default=1,
         help="Report heldout performance every this many epochs (default: 1)",
     )
-    train_grp.add_argument("--num-epochs", type=int, default=4, help="Number of epochs (default: 10)")
+    train_grp.add_argument("--num_epochs", type=int, default=4, help="Number of epochs (default: 10)")
     train_grp.add_argument("--val_interval", type=int, default=1500, help="Number of iterations (default: 5000)")
     train_grp.add_argument("--batch-size", type=int, default=50, help="Minibatch size (default: 25)")
     train_grp.add_argument("--weight-decay", type=float, default=0, help="L2 regularization (default: 0)")
@@ -157,8 +157,8 @@ def eval_model(model, eval_counter, pairs_val_dataloader, embeddings, logger, te
             eval_loss += loss
             num_seqs += batch_size
 
-        labels = torch.cat(labels, 0).to(device).float()
-        predictions = torch.cat(predictions, 0).to(device).float()
+        labels = torch.cat(labels, 0).view(-1).to(device).float()
+        predictions = torch.cat(predictions, 0).view(-1).to(device).float()
 
         threshold = .5
         bin_predictions = ((threshold * torch.ones(num_seqs)) < predictions).float()
@@ -203,7 +203,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
         return return_loss, eval_counter + 1, num_eval_seqs_now, return_decline
 
     iterations_counter, eval_counter, = -1, 0
-    eval_loss, patience, decline = evaluation_loss or float('inf'), 10, 0
+    eval_loss, patience, decline = evaluation_loss or float('inf'), 15, 0
     value_rounder = lambda x, pow: round(x / 10 ** pow) * 10 ** pow
 
     num_train_seqs, num_eval_seqs = 0, 0
@@ -272,7 +272,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
             epoch_train_time += perf_counter() - train_epoch_start
             train_total_timer += epoch_train_time
     except NotImplementedError:
-        pass
+        logger.info(" Termination due to patience exceedance! ".center(100, '!'))
     total_time = perf_counter() - total_time
     logger.info(' Time Elapsed '.center(100, '*'))
     logger.info(f'Time per Epoch in h: {total_time / num_epochs / 3600}')
@@ -419,14 +419,14 @@ def train_linear(args, train_dataloader, val_dataloader, embeddings, logger, ten
 def get_dirs_for_model(args, model_name, experiment_specs):
     output_creation_dir = args.output_creation_dir
     logging_path = args.logging_path or output_creation_dir.joinpath(f'{model_name}/logs/{experiment_specs}/runlog.log')
-    logger = getlogger(logging_path)
+    logger = getlogger(logging_path, name=model_name)
 
     tensorboard_path = args.tensorboard_path or output_creation_dir.joinpath(f'{model_name}/tensorboard/{experiment_specs}')
-    tensorboard_path.mkdir(parents=True, exists_ok=True)
+    tensorboard_path.mkdir(parents=True, exist_ok=True)
     tensorboard_logger = SummaryWriter(log_dir=tensorboard_path)
 
     model_save_path = args.model_save_path or output_creation_dir.joinpath(f'{model_name}/models/{experiment_specs}')
-    model_save_path.mkdir(parents=True, exists_ok=True)
+    model_save_path.mkdir(parents=True, exist_ok=True)
     return logger, tensorboard_logger, model_save_path
 
 

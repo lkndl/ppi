@@ -103,7 +103,7 @@ def add_args(parser):
         default=1,
         help="Report heldout performance every this many epochs (default: 1)",
     )
-    train_grp.add_argument("--num-epochs", type=int, default=10, help="Number of epochs (default: 10)")
+    train_grp.add_argument("--num_epochs", type=int, default=10, help="Number of epochs (default: 10)")
     train_grp.add_argument("--batch-size", type=int, default=25, help="Minibatch size (default: 25)")
     train_grp.add_argument("--weight-decay", type=float, default=0, help="L2 regularization (default: 0)")
     train_grp.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
@@ -224,7 +224,7 @@ def train(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloader
         return return_loss, eval_counter + 1, num_eval_seqs_now, return_decline
 
     iterations_counter, eval_counter, = -1, 0
-    eval_loss, patience, decline = evaluation_loss or float('inf'), 10, 0
+    eval_loss, patience, decline = evaluation_loss or float('inf'), 15, 0
     value_rounder = lambda x, pow: round(x / 10 ** pow) * 10 ** pow
 
     num_train_seqs, num_eval_seqs = 0, 0
@@ -292,7 +292,7 @@ def train(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloader
             epoch_train_time += perf_counter() - train_epoch_start
             train_total_timer += epoch_train_time
     except NotImplementedError:
-        pass
+        logger.info(" Termination due to patience exceedance! ".center(100, '!'))
     total_time = perf_counter() - total_time
     logger.info(' Time Elapsed '.center(100, '*'))
     logger.info(f'Time per Epoch in h: {total_time / num_epochs / 3600}')
@@ -345,11 +345,11 @@ def main(args):
     logger = getlogger(logging_path)
 
     tensorboard_path = args.tensorboard_path or output_creation_dir.joinpath(f'tensorboard/{experiment_specs}')
-    tensorboard_path.mkdir(parents=True, exists_ok=True)
+    tensorboard_path.mkdir(parents=True, exist_ok=True)
     tensorboard_logger = SummaryWriter(log_dir=tensorboard_path)
 
     model_save_path = args.model_save_path or output_creation_dir.joinpath(f'models/{experiment_specs}')
-    model_save_path.mkdir(parents=True, exists_ok=True)
+    model_save_path.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Using {device}')
 

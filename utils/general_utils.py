@@ -4,6 +4,7 @@ import torch
 from pathlib import Path
 from typing import Set, Iterable, Union
 import logging
+import sys
 
 
 def wipe_memory():
@@ -12,9 +13,9 @@ def wipe_memory():
     return None
 
 
-def getlogger(logging_path):
+def getlogger(logging_path, name=''):
     logging_path.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger()
+    logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(message)s')
 
@@ -27,6 +28,8 @@ def getlogger(logging_path):
     stream_log_handler.setFormatter(formatter)
     stream_log_handler.setLevel(logging.INFO)
     logger.addHandler(stream_log_handler)
+
+    return logger
 
 
 def gpu_mem(device):
