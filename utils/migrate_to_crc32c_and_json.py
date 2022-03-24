@@ -29,8 +29,8 @@ import numpy as np
 import pandas as pd
 import tqdm
 
-from ppi.t5.utils.general_utils import DoesNotContain, glob_type, glob_types, get_parent
-from ppi.t5.utils.sequence_utils import parse_fasta, load_identifiers, load_identifiers_json
+from general_utils import DoesNotContain, glob_type, glob_types, get_parent
+from sequence_utils import parse_fasta, load_identifiers, load_identifiers_json
 
 
 def migrate_main(args) -> None:

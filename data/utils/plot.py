@@ -1,0 +1,202 @@
+from typing import Dict, Tuple
+
+import matplotlib as mpl
+import networkx as nx
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
+
+from data.utils.pairs import fetch_degrees, count_homodimers, estimate_bias
+
+mpl.rcParams['figure.dpi'] = 200
+
+
+@mpl.style.context('seaborn-poster')
+def draw_toy_ppis(ppis: pd.DataFrame,
+                  n_dict: Dict[str, pd.DataFrame],
+                  seed: int = 42,
+                  ) -> Tuple[Figure, Figure]:
+    def _edges_from_pd(df):
+        return ((a, b) for _, a, b in df.itertuples())
+
+    def _minmax(ar, _min=80, _max=400):
+        ar = np.array(ar)
+        mi = np.min(ar)
+        ma = np.max(ar)
+        return (ar - mi) / (ma - mi) * (_max - _min) + _min
+
+    # some magic so that the order of the plots stays
+    # the same, but the true PPIs still come first
+    keys = list(n_dict.keys())[::-1] + ['positive']
+    n_dict['positive'] = ppis
+    nodes = np.unique(ppis.iloc[:, [0, 1]])
+    densest = 0, None
+    graphs = dict()
+
+    for key in reversed(keys):
+        negatives = n_dict[key]
+        G = nx.Graph()
+        G.add_nodes_from(nodes)
+        G.add_edges_from(_edges_from_pd(negatives), attr=dict(source=key))
+        graphs[key] = G
+
+        if (l := len(G.edges)) > densest[0]:
+            densest = l, G
+
+    # H = nx.Graph(densest[1])
+    H = nx.Graph(graphs['positive'])
+    H.add_edges_from(_edges_from_pd(ppis))
+    pos = nx.spring_layout(H, iterations=100, seed=seed)
+    pos = nx.kamada_kawai_layout(H)
+    circ = nx.circular_layout(H)
+
+    figs = list()
+    for anno, lay in enumerate((pos, circ)):
+        fig, axes = plt.subplots(1, len(n_dict))
+        for ax, (key, G) in zip(axes, graphs.items()):
+            nx.draw(H, pos=lay, ax=ax, alpha=.2, with_labels=False, node_size=0)
+            nx.draw(G, pos=lay, ax=ax, with_labels=True,
+                    node_size=_minmax([G.degree[v] for v in G]),
+                    node_color=[float(G.degree(v)) for v in G], cmap='Blues_r',
+                    )
+            if anno:
+                ax.set(box_aspect=1)
+            else:
+                ax.set(box_aspect=1, ylim=(-1.2, None), xlim=(-1, None))
+                bias = estimate_bias(ppis, n_dict[key])[0]
+                ax.annotate(key + (f':\n{bias:.2f}' if key != 'positive' else ''),
+                            xy=(-1, -1.2))
+        fig.tight_layout()
+        figs.append(fig)
+
+    return figs[0], figs[1]
+
+
+def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
+    df = pairs.groupby('species').apply(count_homodimers).reset_index()
+    df[['_count', '_share', '_total']] = df[0].to_list()
+
+    fig, ax = plt.subplots(figsize=(8, 2), facecolor='white')
+    scatter = sns.scatterplot(data=df,
+                              x='_total',
+                              y='_share',
+                              s=40,
+                              ax=ax,
+                              )
+    ax.set(xscale='log', ylim=(None, 1.2),
+           xlabel='species PPI set size',
+           ylabel='homodimer share',
+           )
+    for i, point in df.iterrows():
+        ax.annotate(point.species,
+                    (point._total * 1.05,
+                     point._share + .05),
+                    rotation=50, size=6)
+    sns.despine(left=True, bottom=True)
+    return fig
+
+
+def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
+              bias: pd.DataFrame, ratio: float = 10.0) -> Figure:
+    s = 'species'
+    bias = (bias.merge(plus.groupby(s)['label'].size(), on=s)
+            .merge(minus.groupby(s)['label'].size(), on=s))
+    bias.columns = ['species', 'bias', 'positives', 'negatives']
+    bias['fulfill'] = bias.negatives / ratio / bias.positives
+    cmap = sns.cubehelix_palette(rot=-.2, as_cmap=True)
+    bias['bias'] = bias.bias.astype(float)
+
+    fig, ax = plt.subplots(figsize=(4.4, 4.4), facecolor='white')
+    scatter = sns.scatterplot(data=bias,
+                              ax=ax,
+                              x='positives', y='negatives',
+                              hue='bias', palette=cmap,
+                              # aspect=1, height=4,
+                              s=40, alpha=.8,
+                              zorder=99,
+                              )
+
+    for i, point in bias.iterrows():
+        if point.negatives < 10000:
+            ax.annotate(point.species,
+                        (point.positives * 1.4,
+                         point.negatives * .9),
+                        rotation=0, size=6)
+
+    ax.set(xscale='log', yscale='log')
+    ax.xaxis.grid(True, 'minor', linewidth=.2, alpha=.6, zorder=0)
+    ax.yaxis.grid(True, 'minor', linewidth=.2, alpha=.6, zorder=0)
+    ax.xaxis.grid(True, 'major', linewidth=.5, zorder=0)
+    ax.yaxis.grid(True, 'major', linewidth=.5, zorder=0)
+    sns.despine(fig, left=True, bottom=True)
+    ax.set(box_aspect=1)
+    ax.axline((1, ratio), (100, 100 * ratio), lw=1,
+              alpha=.5, zorder=1)
+    ax.legend(frameon=False, bbox_to_anchor=(1, 1),
+              title='set bias', loc='upper left')
+    return fig
+
+
+@mpl.style.context('seaborn')
+def plot_test_degrees(test_all: pd.DataFrame, ratio: float = 10.0,
+                      flip: bool = False) -> Figure:
+    pairs = fetch_degrees(test_all)
+    species = list(pairs.species.value_counts().index)[:5]
+
+    shape = (len(species), 3)
+    size = (8, 3 * len(species))
+    if flip:
+        shape, size = shape[::-1], size[::-1]
+
+    fig, axes = plt.subplots(*shape, figsize=size,
+                             sharey='row' if not flip else 'col',
+                             sharex='row' if not flip else 'col')
+    # if shape[0] == 1:
+    #     axes = axes.reshape(axes.shape[0], 1)
+    for row, sp in enumerate(species):
+        ymax = max(pairs.loc[(pairs.species == sp)
+                             & (pairs.label == 1) & (pairs.x == 0), 'degree'])
+        xmax = max(pairs.x)
+        # return pairs.loc[pairs.species == sp]
+        axes_now = (axes[row, :] if not flip else axes[:, row]) \
+            if len(species) > 1 else axes
+        for cclass, ax in enumerate(axes_now):
+            dat = pairs.loc[(pairs.cclass == cclass + 1)
+                            & (pairs.species == sp)]
+            for label, (color, name) in enumerate(zip(
+                    ('#D81B60', '#1E88E5'), ('−', '+'))):
+                dat_ = dat.loc[dat.label == label]
+                ax.plot(dat_.x, dat_.degree, color=color, label=name)
+            ax.plot(dat_.x, ratio * dat_.degree, color='.5',
+                    alpha=.5, zorder=0, label=f'{ratio} × +')
+            ax.set(yscale='linear', xscale='log', box_aspect=1)
+            #        xlim=(1, xmax),
+            #        ylim=(1, int(ratio * ymax + 1)))
+            if row == 0 and not flip:
+                ax.set(title=f'C{cclass + 1}')
+            elif row == len(species) - 1 and flip:
+                ax.set_title(f'C{cclass + 1}', y=.5, loc='right')
+
+    ax1, ax2 = (axes[-1, 0], axes[0, -1]) if len(species) > 1 else (axes[0], axes[-1])
+    ax1.set(xlabel='degree rank', ylabel='node degree')
+    ax2.legend(frameon=False)
+    fig.subplots_adjust(hspace=.2 if flip else .05, wspace=.2 if flip else .1)
+    # fig.tight_layout()
+    return fig
+
+
+@mpl.style.context('seaborn-whitegrid')
+def plot_c_classes(series: pd.Series) -> Figure:
+    fig, ax = plt.subplots(figsize=(3, 3), facecolor='white')
+    ax = sns.countplot(
+        x=series, palette={1: '#D81B60', 2: '#1E88E5', 3: '#FFC107'}, ax=ax)
+    ax.set(box_aspect=1)
+    sns.despine(ax=ax, left=True, bottom=True, right=True)
+    a2b = lambda y: y / len(series)
+    b2a = lambda y: len(series) * y
+    ax2 = ax.secondary_yaxis('right', functions=(a2b, b2a))
+    ax2.set(ylabel='share')
+    sns.despine(ax=ax2, left=True, right=True)
+    return fig
