@@ -19,7 +19,7 @@ class Linear(nn.Module):
         concat = concat.view(concat.shape[0], -1)
         return self.linear(concat)
 
-    def infer(self, emb_prot1, emb_prot2):
+    def predict(self, emb_prot1, emb_prot2):
         logit = self.forward(emb_prot1, emb_prot2)
         return nn.Sigmoid()(logit)
 
@@ -54,7 +54,7 @@ class MLP(nn.Module):
         x = x.view(x.shape[0], -1)
         return self.linear(x)
 
-    def infer(self, emb_prot1, emb_prot2):
+    def predict(self, emb_prot1, emb_prot2):
         logit = self.forward(emb_prot1, emb_prot2)
         return nn.Sigmoid()(logit)
 
@@ -88,7 +88,7 @@ class ProjectedAttention(nn.Module):
         x = x.view(x.shape[0], -1)
         return self.linear(x)
 
-    def infer(self, emb_prot1, emb_prot2):
+    def predict(self, emb_prot1, emb_prot2):
         logit = self.forward(emb_prot1, emb_prot2)
         return nn.Sigmoid()(logit)
 
@@ -119,7 +119,7 @@ class Attention(nn.Module):
         x = x.view(x.shape[0], -1)
         return self.linear(x)
 
-    def infer(self, emb_prot1, emb_prot2):
+    def predict(self, emb_prot1, emb_prot2):
         logit = self.forward(emb_prot1, emb_prot2)
         return nn.Sigmoid()(logit)
 
