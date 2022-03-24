@@ -177,12 +177,20 @@ def uniprot_api_fetch(uniprot_ids: Union[set, list],
 def fetch_huri_seqs(huri_ids: Dict,
                     out_file: Union[str, Path] = Path('huri'),
                     ) -> Tuple[Dict[str, SeqRecord], Dict[str, str]]:
+    if (fasta_file := out_file.with_suffix('.hash.fasta')).is_file():
+        print(f'loading from {fasta_file} and {out_file.with_suffix(".json")}')
+        fasta = SeqIO.to_dict(SeqIO.parse(fasta_file, 'fasta'))
+        with out_file.with_suffix('.json').open('r') as json_file:
+            from_to = json.load(json_file)
+        return fasta, from_to
+
     fasta, from_to = ensembl_api_fetch(huri_ids['ensembl'],
                                        out_file.with_name('ensembl'))
     uniprot_from_to = uniprot_api_fetch(huri_ids['uniprotkb'],
                                         out_file.with_name('uniprot'))
     fasta.update(SeqIO.to_dict(SeqIO.parse(
         out_file.with_name('uniprot.hash.fasta'), 'fasta')))
+    SeqIO.write(fasta.values(), out_file.with_suffix('.fasta'), 'fasta')
     from_to.update(uniprot_from_to)
     with out_file.with_suffix('.json').open('w') as json_file:
         json.dump(from_to, json_file)

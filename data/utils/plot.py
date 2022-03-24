@@ -78,14 +78,14 @@ def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
     df = pairs.groupby('species').apply(count_homodimers).reset_index()
     df[['_count', '_share', '_total']] = df[0].to_list()
 
-    fig, ax = plt.subplots(figsize=(8, 2), facecolor='white')
+    fig, ax = plt.subplots(figsize=(8, 3), facecolor='white')
     scatter = sns.scatterplot(data=df,
                               x='_total',
                               y='_share',
                               s=40,
                               ax=ax,
                               )
-    ax.set(xscale='log', ylim=(None, 1.2),
+    ax.set(xscale='log', #ylim=(None, 1),
            xlabel='species PPI set size',
            ylabel='homodimer share',
            )
@@ -95,6 +95,7 @@ def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
                      point._share + .05),
                     rotation=50, size=6)
     sns.despine(left=True, bottom=True)
+    fig.tight_layout()
     return fig
 
 
@@ -108,7 +109,7 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
     cmap = sns.cubehelix_palette(rot=-.2, as_cmap=True)
     bias['bias'] = bias.bias.astype(float)
 
-    fig, ax = plt.subplots(figsize=(4.4, 4.4), facecolor='white')
+    fig, ax = plt.subplots(figsize=(6, 4.4), facecolor='white')
     scatter = sns.scatterplot(data=bias,
                               ax=ax,
                               x='positives', y='negatives',
@@ -136,6 +137,7 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
               alpha=.5, zorder=1)
     ax.legend(frameon=False, bbox_to_anchor=(1, 1),
               title='set bias', loc='upper left')
+    fig.tight_layout()
     return fig
 
 
@@ -156,9 +158,9 @@ def plot_test_degrees(test_all: pd.DataFrame, ratio: float = 10.0,
     # if shape[0] == 1:
     #     axes = axes.reshape(axes.shape[0], 1)
     for row, sp in enumerate(species):
-        ymax = max(pairs.loc[(pairs.species == sp)
-                             & (pairs.label == 1) & (pairs.x == 0), 'degree'])
-        xmax = max(pairs.x)
+        # ymax = max(pairs.loc[(pairs.species == sp)
+        #                      & (pairs.label == 1) & (pairs.x == 0), 'degree'])
+        # xmax = max(pairs.x)
         # return pairs.loc[pairs.species == sp]
         axes_now = (axes[row, :] if not flip else axes[:, row]) \
             if len(species) > 1 else axes
@@ -188,14 +190,18 @@ def plot_test_degrees(test_all: pd.DataFrame, ratio: float = 10.0,
 
 
 @mpl.style.context('seaborn-whitegrid')
-def plot_c_classes(series: pd.Series) -> Figure:
-    fig, ax = plt.subplots(figsize=(3, 3), facecolor='white')
+def plot_c_classes(df: pd.DataFrame) -> Figure:
+    fig, ax = plt.subplots(figsize=(4, 3), facecolor='white')
+    series = df.cclass
     ax = sns.countplot(
-        x=series, palette={1: '#D81B60', 2: '#1E88E5', 3: '#FFC107'}, ax=ax)
+        x=df.cclass, palette={1: '#D81B60', 2: '#1E88E5', 3: '#FFC107'}, ax=ax)
+    sns.countplot(
+        x=df.loc[df.label == 1, 'cclass'],
+        palette={1: '#FF4E8E', 2: '#71BDFF', 3: '#FFE083'}, ax=ax)
     ax.set(box_aspect=1)
     sns.despine(ax=ax, left=True, bottom=True, right=True)
-    a2b = lambda y: y / len(series)
-    b2a = lambda y: len(series) * y
+    a2b = lambda y: y / len(df.cclass)
+    b2a = lambda y: len(df.cclass) * y
     ax2 = ax.secondary_yaxis('right', functions=(a2b, b2a))
     ax2.set(ylabel='share')
     sns.despine(ax=ax2, left=True, right=True)

@@ -17,6 +17,11 @@ class SamplingStrategy(Enum):
     BALANCED = 1
 
 
+class CorrelationType(Enum):
+    PEARSON = 0
+    SPEARMAN = 1
+
+
 def make_test_checks(ppis: pd.DataFrame,
                      test_tsv: Union[str, Path],
                      c3_fasta: Union[str, Path],
@@ -49,7 +54,8 @@ def make_test_negatives(test_tsv: Union[str, Path],
                         ) -> Tuple[pd.DataFrame, pd.DataFrame,
                                    Union[float, pd.DataFrame]]:
     ppis = pd.read_csv(test_tsv, sep='\t', header=0)
-    print(len(ppis))
+    sp = 9606 if 'species' not in ppis.columns else ppis.species.unique()[0]
+    # 9606 is the taxid for humans. everybody pays taxes!
     c3_ids = make_test_checks(ppis, test_tsv, c3_fasta, test_fasta)
     _c123 = lambda df: 1 + df.iloc[:, 0].isin(c3_ids) + df.iloc[:, 1].isin(c3_ids)
     ppis['cclass'] = _c123(ppis)
@@ -59,7 +65,7 @@ def make_test_negatives(test_tsv: Union[str, Path],
                                           ratio=ratio, seed=seed,
                                           homodimers=homodimers)
     if 'species' not in negatives.columns:
-        negatives['species'] = 9606  # the taxid for humans. everybody pays taxes!
+        negatives['species'] = sp
     negatives['cclass'] = _c123(negatives)
     print(len(ppis))
     return _tweak(ppis, negatives, bias)
@@ -201,7 +207,6 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     homodimer_share = len(drop_ppis.loc[drop_ppis[0] == drop_ppis[1]]) / len(drop_ppis)
     if homodimers and homodimer_share > 0:
         limit = binom(len(proteins), 2) + len(proteins) - len(drop_ppis)
-        print(f'homo limit {limit}')
     if not quiet:
         print(f'aim for {target_len} negatives; upper limit is {limit:.0f}')
 
@@ -233,17 +238,32 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
 
 
 def estimate_bias(positives: pd.DataFrame,
-                  negatives: pd.DataFrame) -> Tuple[float, float]:
+                  negatives: pd.DataFrame = None,
+                  corrtype: CorrelationType = CorrelationType.PEARSON,
+                  ) -> Tuple[float, float]:
     """
     Calculate the similarity between two sets of protein pairs:
-    the Spearman correlation coefficient between their protein-
-    appearance frequency vectors.
+    the Spearman or Pearson correlation coefficient between their
+    protein-appearance frequency vectors.
     """
+    if negatives is None:
+        assert 'label' in positives.columns
+        negatives = positives.loc[positives.label == 0].copy()
+        positives = positives.loc[positives.label == 1].copy()
+        assert len(positives), 'no positives in passed DataFrame'
+        assert len(negatives), 'no negatives in passed DataFrame'
+
     plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
                    for ar in (positives, negatives)]
     minus.update({k: 0 for k in plus.keys() - minus.keys()})
-    return stats.spearmanr(*[[ar[k] for k in sorted(ar.keys())]
-                             for ar in (plus, minus)], axis=1)
+    if corrtype.value == 0:
+        return stats.pearsonr(*[[ar[k] for k in sorted(ar.keys())]
+                                for ar in (plus, minus)])
+    elif corrtype.value == 1:
+        return stats.spearmanr(*[[ar[k] for k in sorted(ar.keys())]
+                                 for ar in (plus, minus)], axis=1)
+    else:
+        assert False, 'illegal correlation type'
 
 
 def find_multi_species_proteins(ppis: pd.DataFrame) -> pd.DataFrame:
