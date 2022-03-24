@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Set, Iterable, Union
 import logging
 import sys
+import json
+import hashlib
 
 
 def wipe_memory():
@@ -30,6 +32,18 @@ def getlogger(logging_path, name=''):
     logger.addHandler(stream_log_handler)
 
     return logger
+
+
+def get_hash(hash_obj):
+    def json_dumps():
+        return json.dumps(
+            hash_obj,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=None,
+            separators=(',', ':'),
+        )
+    return hashlib.md5(json_dumps().encode('utf-8')).digest().hex()
 
 
 def gpu_mem(device):
