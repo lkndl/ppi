@@ -85,7 +85,7 @@ def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
                               s=40,
                               ax=ax,
                               )
-    ax.set(xscale='log', #ylim=(None, 1),
+    ax.set(xscale='log',  # ylim=(None, 1),
            xlabel='species PPI set size',
            ylabel='homodimer share',
            )
@@ -139,6 +139,44 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
               title='set bias', loc='upper left')
     fig.tight_layout()
     return fig
+
+
+def plot_ratio_degree(positives: pd.DataFrame,
+                      negatives: pd.DataFrame = None,
+                      ratio: float = 10,
+                      ) -> Figure:
+    """
+    Calculate the similarity between two sets of protein pairs:
+    the Spearman or Pearson correlation coefficient between their
+    protein-appearance frequency vectors.
+    """
+    if negatives is None:
+        assert 'label' in positives.columns
+        negatives = positives.loc[positives.label == 0].copy()
+        positives = positives.loc[positives.label == 1].copy()
+        assert len(positives), 'no positives in passed DataFrame'
+        assert len(negatives), 'no negatives in passed DataFrame'
+
+    plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
+                   for ar in (positives, negatives)]
+    minus.update({k: 0 for k in plus.keys() - minus.keys()})
+    sp_lookup = positives[['hash_A', 'hash_B', 'species']].melt(
+        id_vars='species')[['value', 'species']].drop_duplicates().set_index(
+        'value').to_dict()['species']
+    df = pd.DataFrame.from_records([(v, minus[k] / v, sp_lookup[k]) for k, v in
+                                    plus.items()], columns=['degree', 'ratio', 'species'])
+    df['species'] = pd.Categorical(df.species)
+    g = sns.JointGrid(data=df, x='ratio', y='degree', hue='species',
+                      marginal_ticks=True, height=5, ratio=6, palette='colorblind')
+    g.plot_joint(sns.scatterplot, s=4, alpha=.6, legend=False)
+    g.plot_marginals(sns.kdeplot, warn_singular=False)
+    g.ax_joint.set(xlim=(0, 30), xlabel='ratio −:+ interactions',
+                   ylabel='node degree')
+    g.ax_joint.axvline(x=ratio, lw=1, alpha=.5, zorder=1)
+    g.ax_marg_x.axvline(x=ratio, lw=1, alpha=.5, zorder=1)
+    g.ax_marg_x.set(yticks=[])
+    g.ax_marg_y.set(xticks=[])
+    return g.figure
 
 
 @mpl.style.context('seaborn')

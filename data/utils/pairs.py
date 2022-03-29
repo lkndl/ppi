@@ -50,7 +50,8 @@ def make_test_negatives(test_tsv: Union[str, Path],
                         strategy: SamplingStrategy = SamplingStrategy.BALANCED,
                         ratio: float = 10.0,
                         seed: int = 42,
-                        homodimers: bool = True,
+                        accept_homodimers: bool = True,
+                        proteome_dir: Path = None,
                         ) -> Tuple[pd.DataFrame, pd.DataFrame,
                                    Union[float, pd.DataFrame]]:
     ppis = pd.read_csv(test_tsv, sep='\t', header=0)
@@ -63,7 +64,8 @@ def make_test_negatives(test_tsv: Union[str, Path],
     negatives, bias = find_negative_pairs(ppis[['hash_A', 'hash_B', 'species']],
                                           strategy=strategy,
                                           ratio=ratio, seed=seed,
-                                          homodimers=homodimers)
+                                          accept_homodimers=accept_homodimers,
+                                          proteome_dir=proteome_dir)
     if 'species' not in negatives.columns:
         negatives['species'] = sp
     negatives['cclass'] = _c123(negatives)
@@ -74,10 +76,12 @@ def make_test_negatives(test_tsv: Union[str, Path],
 def make_train_negatives(ppis: pd.DataFrame,
                          strategy: SamplingStrategy = SamplingStrategy.BALANCED,
                          ratio: float = 10.0, seed: int = 42,
-                         homodimers: bool = True,
+                         accept_homodimers: bool = True,
                          sus_ppis: pd.DataFrame = None,
+                         proteome_dir: Path = None,
                          ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    negatives, bias = find_negative_pairs(ppis, sus_ppis, strategy, ratio, seed, homodimers)
+    negatives, bias = find_negative_pairs(ppis, sus_ppis, strategy, ratio, seed,
+                                          accept_homodimers, proteome_dir)
     return _tweak(ppis, negatives, bias)
 
 
@@ -162,7 +166,8 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
                         strategy: SamplingStrategy = SamplingStrategy.BALANCED,
                         ratio: float = 10.0,
                         seed: int = 42,
-                        homodimers: bool = True,
+                        accept_homodimers: bool = True,
+                        proteome_dir: Path = None,
                         quiet: bool = False,
                         ) -> Tuple[pd.DataFrame, Union[float, np.ndarray]]:
     if 'species' in true_ppis.columns and len(set(true_ppis.species)) > 1:
@@ -172,7 +177,7 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
         for sp, ppis in true_ppis.groupby('species'):
             sp = int(sp)
             sp_negatives, biases[sp] = find_negative_pairs(
-                ppis, sus_ppis, strategy, ratio, seed, homodimers, True)
+                ppis, sus_ppis, strategy, ratio, seed, accept_homodimers, proteome_dir, True)
             sp_negatives['species'] = sp
             negatives.append(sp_negatives)
         negatives = pd.concat(negatives)
@@ -183,16 +188,18 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
               f'{np.nanmean(bias[1, :]):.3f}±{np.nanstd(bias[1, :]):.3f} (std)')
         return negatives, bias
 
+    # map protein IDs to their sorting index
     uniq_true = {_id: idx for idx, _id in enumerate(
         np.unique(true_ppis.iloc[:, [0, 1]]))}
     uniq_neg = {idx: _id for _id, idx in uniq_true.items()}
-    index = np.vectorize(uniq_true.get)
+    indexize = np.vectorize(uniq_true.get)
     unindex = np.vectorize(uniq_neg.get)
-    idx_ppis = index(true_ppis.iloc[:, [0, 1]])
+    idx_ppis = indexize(true_ppis.iloc[:, [0, 1]])
     if sus_ppis is not None:
-        idx_ppis = np.vstack((idx_ppis, index(sus_ppis.iloc[:, [0, 1]])))
+        idx_ppis = np.vstack((idx_ppis, indexize(sus_ppis.iloc[:, [0, 1]])))
     drop_ppis = pd.DataFrame(idx_ppis.copy())
 
+    # np.unique returns sorted values, so this works out
     proteins, counts = np.unique(true_ppis.iloc[:, [0, 1]], return_counts=True)
     indices = np.array(range(len(proteins)))
     frequencies = counts / np.sum(counts)
@@ -205,7 +212,7 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
             + len(drop_ppis.loc[drop_ppis[0] == drop_ppis[1]])
 
     homodimer_share = len(drop_ppis.loc[drop_ppis[0] == drop_ppis[1]]) / len(drop_ppis)
-    if homodimers and homodimer_share > 0:
+    if accept_homodimers and homodimer_share > 0:
         limit = binom(len(proteins), 2) + len(proteins) - len(drop_ppis)
     if not quiet:
         print(f'aim for {target_len} negatives; upper limit is {limit:.0f}')
@@ -214,7 +221,7 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
         cols = rng.choice(indices, size=(len(idx_ppis), 2),
                           replace=True, p=frequencies)
         cols = pd.DataFrame(np.unique(np.sort(cols, axis=1), axis=0))
-        if not homodimers or homodimer_share == 0:
+        if not accept_homodimers or homodimer_share == 0:
             cols = cols.loc[cols[0] != cols[1]]
         cols = pd.concat((drop_ppis, drop_ppis, cols)) \
             .drop_duplicates(keep=False)  # using the ppis twice so they are all dropped!
@@ -234,6 +241,8 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     bias = estimate_bias(true_ppis, negatives)[0]
     if not quiet:
         print(f'got {len(negatives)} negatives with bias {bias:.3f}')
+
+    # TODO most of the nodes have too many interaction partners; and hubs have too few
     return negatives, bias
 
 
