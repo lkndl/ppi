@@ -110,4 +110,4 @@ def ppis_to_hashes(ppis: pd.DataFrame, json_path: Path) -> pd.DataFrame:
     ppis.iloc[:, [0, 1]] = _to_hash(ppis.iloc[:, [0, 1]])
     ppis.columns = ['hash_A', 'hash_B'] + list(ppis.columns)[2:]
     ppis.species = ppis.species.astype('int64')
-    return dedup_pairs(ppis)
+    return dedup_pairs(ppis).sort_values(by=['species', 'hash_A', 'hash_B'])

@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Set, List
 
 import matplotlib as mpl
 import networkx as nx
@@ -8,7 +8,8 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
-from data.utils.pairs import fetch_degrees, count_homodimers, estimate_bias
+from data.utils.pairs import fetch_ratios, count_homodimers, \
+    estimate_bias, split_pos_neg_plus_minus
 
 mpl.rcParams['figure.dpi'] = 200
 
@@ -17,9 +18,10 @@ mpl.rcParams['figure.dpi'] = 200
 def draw_toy_ppis(ppis: pd.DataFrame,
                   n_dict: Dict[str, pd.DataFrame],
                   seed: int = 42,
+                  extra_nodes: Set = None
                   ) -> Tuple[Figure, Figure]:
     def _edges_from_pd(df):
-        return ((a, b) for _, a, b in df.itertuples())
+        return ((a, b) for _, a, b in df.iloc[:, [0, 1]].itertuples())
 
     def _minmax(ar, _min=80, _max=400):
         ar = np.array(ar)
@@ -31,7 +33,7 @@ def draw_toy_ppis(ppis: pd.DataFrame,
     # the same, but the true PPIs still come first
     keys = list(n_dict.keys())[::-1] + ['positive']
     n_dict['positive'] = ppis
-    nodes = np.unique(ppis.iloc[:, [0, 1]])
+    nodes = set(np.unique(ppis.iloc[:, [0, 1]])) | extra_nodes
     densest = 0, None
     graphs = dict()
 
@@ -144,45 +146,90 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
 def plot_ratio_degree(positives: pd.DataFrame,
                       negatives: pd.DataFrame = None,
                       ratio: float = 10,
-                      ) -> Figure:
+                      ) -> Tuple[Figure, pd.DataFrame]:
     """
     Calculate the similarity between two sets of protein pairs:
     the Spearman or Pearson correlation coefficient between their
     protein-appearance frequency vectors.
     """
-    if negatives is None:
-        assert 'label' in positives.columns
-        negatives = positives.loc[positives.label == 0].copy()
-        positives = positives.loc[positives.label == 1].copy()
-        assert len(positives), 'no positives in passed DataFrame'
-        assert len(negatives), 'no negatives in passed DataFrame'
-
-    plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
-                   for ar in (positives, negatives)]
+    # TODO test with homodimers to make sure this does not return
+    #  node *degrees*, but the ratio of negative to positive edges
+    plus, minus = split_pos_neg_plus_minus(positives, negatives)
     minus.update({k: 0 for k in plus.keys() - minus.keys()})
     sp_lookup = positives[['hash_A', 'hash_B', 'species']].melt(
         id_vars='species')[['value', 'species']].drop_duplicates().set_index(
         'value').to_dict()['species']
-    df = pd.DataFrame.from_records([(v, minus[k] / v, sp_lookup[k]) for k, v in
-                                    plus.items()], columns=['degree', 'ratio', 'species'])
+    df = pd.DataFrame.from_records([(k, v, minus[k] / v, sp_lookup[k])
+                                    for k, v in plus.items()],
+                                   columns=['crc_hash', 'degree', 'ratio', 'species'])
     df['species'] = pd.Categorical(df.species)
     g = sns.JointGrid(data=df, x='ratio', y='degree', hue='species',
-                      marginal_ticks=True, height=5, ratio=6, palette='colorblind')
-    g.plot_joint(sns.scatterplot, s=4, alpha=.6, legend=False)
+                      marginal_ticks=True, height=5, space=0, ratio=6,
+                      palette='colorblind')
+    g.plot_joint(sns.scatterplot, legend=False,
+                 s=25, alpha=.8
+                 )
     g.plot_marginals(sns.kdeplot, warn_singular=False)
-    g.ax_joint.set(xlim=(0, 30), xlabel='ratio −:+ interactions',
-                   ylabel='node degree')
-    g.ax_joint.axvline(x=ratio, lw=1, alpha=.5, zorder=1)
-    g.ax_marg_x.axvline(x=ratio, lw=1, alpha=.5, zorder=1)
+    g.ax_joint.set(  # xlim=(ratio - 4, ratio + 4),
+        yscale='log', xscale='linear',
+        xlabel='ratio −:+ interactions',
+        ylabel='node degree')
+    # g.ax_joint.axvline(x=ratio, lw=1, alpha=.5, zorder=0)
+    # g.ax_marg_x.axvline(x=ratio, lw=1, alpha=.5, zorder=0)
+    g.refline(x=ratio, lw=1, alpha=.5, zorder=0)
     g.ax_marg_x.set(yticks=[])
     g.ax_marg_y.set(xticks=[])
-    return g.figure
+    g.figure.set_facecolor('white')
+    sns.despine(ax=g.ax_marg_x, left=True)
+    sns.despine(ax=g.ax_marg_y, bottom=False)
+    return g.figure, df
+
+
+def plot_ratio_grids(df: pd.DataFrame, order: List = None, ratio: float = 10.0) -> Tuple[Figure, Figure]:
+    g = sns.relplot(data=df,
+                    x='ratio', y='degree',  # hue='species',
+                    col='species', col_wrap=5,
+                    col_order=order,
+                    height=1.5,
+                    alpha=.4,
+                    )
+    g.set(box_aspect=1, yscale='log', xlabel='', ylabel='')
+    g.refline(x=ratio, lw=1, alpha=.5, zorder=0)
+    g.set_titles(col_template='{col_name}')
+    g.tight_layout()
+    g.figure.set_facecolor('white')
+    g.axes[-5].set(xlabel='ratio -:+ interactions', ylabel='degree')
+    # g.savefig('train_ratio_degree_grid.png', dpi=300, transparent=False)
+
+    h = sns.displot(data=df, kind='hist',
+                    x='ratio', y='degree',  # hue='species',
+                    col='species', col_wrap=5,
+                    col_order=order,
+                    height=1.5,
+                    # alpha=.4,
+                    # rug=True,
+                    stat='density',
+                    pmax=.07,
+                    bins=40,
+                    discrete=(True, False),
+                    log_scale=(False, True)
+                    )
+    h.set(box_aspect=1,  # yscale='log',
+          xlabel='', ylabel='')
+    # h.refline(x=c.ratio, lw=1, alpha=.5, zorder=0)
+    h.set_titles(col_template='{col_name}')
+    h.tight_layout()
+    h.figure.set_facecolor('white')
+    h.axes[-5].set(xlabel='ratio -:+ interactions', ylabel='degree')
+    # h.savefig('train_ratio_degree_grid_hist.png', dpi=300, transparent=False)
+
+    return g, h
 
 
 @mpl.style.context('seaborn')
-def plot_test_degrees(test_all: pd.DataFrame, ratio: float = 10.0,
-                      flip: bool = False) -> Figure:
-    pairs = fetch_degrees(test_all)
+def plot_test_ratios(test_all: pd.DataFrame, ratio: float = 10.0,
+                     flip: bool = False) -> Figure:
+    pairs = fetch_ratios(test_all)
     species = list(pairs.species.value_counts().index)[:5]
 
     shape = (len(species), 3)
@@ -224,18 +271,23 @@ def plot_test_degrees(test_all: pd.DataFrame, ratio: float = 10.0,
     ax2.legend(frameon=False)
     fig.subplots_adjust(hspace=.2 if flip else .05, wspace=.2 if flip else .1)
     # fig.tight_layout()
+    raise DeprecationWarning('Proteins by themselves do not have a C123 '
+                             'class but are assigned one here! '
+                             'PPIs belong to a class.')
     return fig
 
 
 @mpl.style.context('seaborn-whitegrid')
-def plot_c_classes(df: pd.DataFrame) -> Figure:
+def plot_c_classes(df: pd.DataFrame) -> Tuple[Figure, Dict[int, int]]:
     fig, ax = plt.subplots(figsize=(4, 3), facecolor='white')
-    series = df.cclass
-    ax = sns.countplot(
-        x=df.cclass, palette={1: '#D81B60', 2: '#1E88E5', 3: '#FFC107'}, ax=ax)
-    sns.countplot(
+    bg = sns.countplot(
+        x=df.cclass,
+        palette={1: '#FF669D', 2: '#71BDFF', 3: '#FFE083'}, ax=ax)
+    fg = sns.countplot(
         x=df.loc[df.label == 1, 'cclass'],
-        palette={1: '#FF4E8E', 2: '#71BDFF', 3: '#FFE083'}, ax=ax)
+        palette={1: '#D81B60', 2: '#1E88E5', 3: '#FFC107'}, ax=ax)
+    vc = df.loc[df.label == 1, 'cclass'].value_counts().sort_index()
+    ax.bar_label(container=ax.containers[1], labels=vc)
     ax.set(box_aspect=1)
     sns.despine(ax=ax, left=True, bottom=True, right=True)
     a2b = lambda y: y / len(df.cclass)
@@ -243,4 +295,4 @@ def plot_c_classes(df: pd.DataFrame) -> Figure:
     ax2 = ax.secondary_yaxis('right', functions=(a2b, b2a))
     ax2.set(ylabel='share')
     sns.despine(ax=ax2, left=True, right=True)
-    return fig
+    return fig, dict(vc)

@@ -81,11 +81,11 @@ def run_uniqueprot(input_file: Union[str, Path],
         json_file.write(json.dumps(hval_config, indent=4))
 
     args = ['rostclust', 'uniqueprot',
-            '--work-dir', 'ppi_rostclust',
+            # '--work-dir', 'ppi_rostclust',
             '--hval-config-path', str(hval_path),
             str(input_file), str(output_file)]
     if pretend:
-        print(' '.join(args))
+        return ' '.join(args)
     else:
         cmd_run(args)
 
@@ -99,11 +99,11 @@ def run_uniqueprot2D(input_file: Union[str, Path],
         json.dump(hval_config, json_file)
 
     args = ['rostclust', 'uniqueprot2d',
-            '--work-dir', 'ppi_rostclust',
+            # '--work-dir', 'ppi_rostclust',
             '--hval-config-path', str(hval_path),
             str(input_file), str(database_file), str(output_file)]
     if pretend:
-        print(' '.join(args))
+        return ' '.join(args)
     else:
         cmd_run(args)
 

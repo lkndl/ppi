@@ -1,4 +1,6 @@
 import json
+from io import StringIO
+import sys, os
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -177,7 +179,7 @@ def uniprot_api_fetch(uniprot_ids: Union[set, list],
 def fetch_huri_seqs(huri_ids: Dict,
                     out_file: Union[str, Path] = Path('huri'),
                     ) -> Tuple[Dict[str, SeqRecord], Dict[str, str]]:
-    if (fasta_file := out_file.with_suffix('.hash.fasta')).is_file():
+    if (fasta_file := out_file.with_suffix('.fasta')).is_file():
         print(f'loading from {fasta_file} and {out_file.with_suffix(".json")}')
         fasta = SeqIO.to_dict(SeqIO.parse(fasta_file, 'fasta'))
         with out_file.with_suffix('.json').open('r') as json_file:
@@ -213,8 +215,8 @@ def fetch_taxonomic_info(taxonomic_ids: pd.Series) -> pd.DataFrame:
     return pd.DataFrame.from_dict(common_names, orient='index', columns=['name']) \
         .rename_axis('species').reset_index() \
         .sort_values(by='species').join(
-        taxonomic_ids.value_counts(), on='species',
-        rsuffix='\b\b\b\b\b\b\bn_ppis').reset_index(drop=True)
+        taxonomic_ids.value_counts(), on='species', rsuffix='n_ppis'
+    ).reset_index(drop=True).rename(columns=dict(speciesn_ppis='n_ppis'))
 
 
 def ensembl_api_fetch(embl_ids: Union[set, list],
@@ -305,3 +307,31 @@ def download_y2h_interactome(
     if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
         print('ERROR, something went wrong')
     return out_file
+
+
+def fetch_proteomes(species: set,
+                    proteome_dir: Path = Path('proteomes')) -> None:
+    url = 'https://www.uniprot.org/proteomes/?fil=reference:yes&format=tab&query=' \
+          + '+OR+'.join(f'organism:{sp}' for sp in species)
+
+    r = requests.get(url)
+    tab = pd.read_csv(StringIO(r.text), sep='\t')
+    assert len(set(tab['Proteome ID'])) == len(tab), \
+        'Got multiple/no proteomes for some species'
+
+    if missing := species - set(tab['Organism ID']):
+        if missing == {37296}:
+            s = ['UP000097197', 'Human herpesvirus 8 (HHV-8)', 37296, 72, '', 'Standard', '']
+            tab = pd.concat([tab, pd.DataFrame(s, index=tab.columns).T])
+        else:
+            raise ValueError(f'Missing proteomes: {" ".join(missing)}')
+
+    proteome_dir.mkdir(exist_ok=True, parents=True)
+    proteome_url = 'https://www.uniprot.org/uniprot/?format=fasta&query=proteome:'
+    with tqdm(tab.iterrows(), total=len(tab)) as pbar:
+        for i, proteome in pbar:
+            pbar.set_postfix(batch=proteome['Organism'].split('(')[0].strip())
+            r = requests.get(proteome_url + proteome['Proteome ID'], stream=True)
+            with (proteome_dir / f'{proteome["Organism ID"]}.fasta').open('wb') as fd:
+                for chunk in r.iter_content(chunk_size=1024 * 128):
+                    fd.write(chunk)
