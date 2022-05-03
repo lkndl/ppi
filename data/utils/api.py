@@ -1,8 +1,7 @@
 import json
-from io import StringIO
-import sys, os
 import urllib.parse
 import urllib.request
+from io import StringIO
 from pathlib import Path
 from typing import Union, Tuple, Dict
 
@@ -179,7 +178,7 @@ def uniprot_api_fetch(uniprot_ids: Union[set, list],
 def fetch_huri_seqs(huri_ids: Dict,
                     out_file: Union[str, Path] = Path('huri'),
                     ) -> Tuple[Dict[str, SeqRecord], Dict[str, str]]:
-    if (fasta_file := out_file.with_suffix('.fasta')).is_file():
+    if (fasta_file := out_file.with_suffix('.hash.fasta')).is_file():
         print(f'loading from {fasta_file} and {out_file.with_suffix(".json")}')
         fasta = SeqIO.to_dict(SeqIO.parse(fasta_file, 'fasta'))
         with out_file.with_suffix('.json').open('r') as json_file:

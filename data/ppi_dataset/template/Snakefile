@@ -1,0 +1,91 @@
+import sys
+from pathlib import Path
+
+
+if (s := config['pkg_root']) not in sys.path:
+    sys.path.append(s)
+
+from data.utils.general import run_uniqueprot, run_uniqueprot2D
+
+cwd = Path(config['pp'])
+hval_config = Path(config['hval_config_path'])
+
+wildcard_constraints:
+    species='\d+'
+
+
+rule all:
+    input:
+        # request a dummy file
+        'done'
+    shell:
+        # then delete it so this runs again
+        'rm done'
+
+rule request:
+    input:
+        cwd / '9606_nr_test.fasta',
+        cwd / '9606_rr_test.fasta',
+        expand(cwd / '{species}_nr_val.fasta',
+            species=set(config['val_species'] + config['train_species'])),
+        expand(cwd / '{species}_nr_valtest.fasta',
+            species=set(config['train_species'])),
+        expand(cwd / '{species}_rr_val.fasta',
+            species=set(config['val_species'])),
+    output:
+        file='done'
+    run:
+        # touch this dummy file
+        open(output.file,'w')
+
+rule nr_9606:
+    input:
+        fasta=cwd / '9606.fasta'
+    output:
+        fasta=cwd / '9606_nr_test.fasta'
+    priority: 50
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['test_rr_fasta'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_val:
+    input:
+        fasta=cwd / '{species}.fasta'
+    output:
+        fasta=cwd / '{species}_nr_val.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['val_rr_fasta'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_test:
+    input:
+        fasta=cwd / '{species}_nr_val.fasta'
+    output:
+        fasta=cwd / '{species}_nr_valtest.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['test_rr_fasta'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule red_reduce:
+    input:
+        fasta=cwd / '{species}_nr_{sfx}.fasta'
+    output:
+        fasta=cwd / '{species}_rr_{sfx}.fasta'
+    run:
+        run_uniqueprot(
+            input_file=input.fasta,
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )

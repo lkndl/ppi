@@ -74,38 +74,31 @@ def glob_types(directory: Union[str, Path],
 
 def run_uniqueprot(input_file: Union[str, Path],
                    output_file: Union[str, Path],
-                   hval_config: Dict,
-                   pretend: bool = False):
-    hval_path = Path('hval_config.json')
-    with hval_path.open('w') as json_file:
-        json_file.write(json.dumps(hval_config, indent=4))
-
+                   hval_config: Path,
+                   pretend: bool = False,
+                   verbose: bool = True):
     args = ['rostclust', 'uniqueprot',
-            # '--work-dir', 'ppi_rostclust',
-            '--hval-config-path', str(hval_path),
+            '--hval-config-path', str(hval_config),
             str(input_file), str(output_file)]
     if pretend:
         return ' '.join(args)
     else:
-        cmd_run(args)
+        cmd_run(args, verbose=verbose)
 
 
 def run_uniqueprot2D(input_file: Union[str, Path],
                      database_file: Union[str, Path],
                      output_file: Union[str, Path],
-                     hval_config: Dict, pretend: bool = False):
-    hval_path = Path('hval_config.json')
-    with hval_path.open('w') as json_file:
-        json.dump(hval_config, json_file)
-
+                     hval_config: Path,
+                     pretend: bool = False,
+                     verbose: bool = True):
     args = ['rostclust', 'uniqueprot2d',
-            # '--work-dir', 'ppi_rostclust',
-            '--hval-config-path', str(hval_path),
+            '--hval-config-path', str(hval_config),
             str(input_file), str(database_file), str(output_file)]
     if pretend:
         return ' '.join(args)
     else:
-        cmd_run(args)
+        cmd_run(args, verbose=verbose)
 
 
 def get_seq_hash(seq: Union[str, Seq]) -> str:
@@ -114,6 +107,17 @@ def get_seq_hash(seq: Union[str, Seq]) -> str:
 
 def to_fasta(_id: Union[str, int], seq: str, file_handle: IO) -> None:
     _ = file_handle.write(''.join(to_lines(_id, seq)))
+
+
+def write_json(_dict: Dict, _json: Union[str, Path]) -> Dict:
+    with Path(_json).open('w') as json_file:
+        json.dump(_dict, json_file, indent=2)
+    return _dict
+
+
+def read_json(_json: Union[str, Path]) -> Dict:
+    return {int(k): v for k, v in json.load(
+        _json.open('r')).items()}
 
 
 def to_lines(_id: str, seq: Union[str, Seq], lw: int = 60) -> str:

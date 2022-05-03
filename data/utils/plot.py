@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Set, List
+from typing import Dict, Tuple, Set, List, Union
 
 import matplotlib as mpl
 import networkx as nx
@@ -20,10 +20,13 @@ def draw_toy_ppis(ppis: pd.DataFrame,
                   seed: int = 42,
                   extra_nodes: Set = None
                   ) -> Tuple[Figure, Figure]:
+    if not extra_nodes:
+        extra_nodes = set()
+
     def _edges_from_pd(df):
         return ((a, b) for _, a, b in df.iloc[:, [0, 1]].itertuples())
 
-    def _minmax(ar, _min=80, _max=400):
+    def _minmax(ar, _min=60, _max=320):
         ar = np.array(ar)
         mi = np.min(ar)
         ma = np.max(ar)
@@ -58,10 +61,12 @@ def draw_toy_ppis(ppis: pd.DataFrame,
     for anno, lay in enumerate((pos, circ)):
         fig, axes = plt.subplots(1, len(n_dict))
         for ax, (key, G) in zip(axes, graphs.items()):
-            nx.draw(H, pos=lay, ax=ax, alpha=.2, with_labels=False, node_size=0)
+            nx.draw(H, pos=lay, ax=ax, alpha=.4, edge_color='#FF70A4',
+                    with_labels=False, node_size=0)
             nx.draw(G, pos=lay, ax=ax, with_labels=True,
                     node_size=_minmax([G.degree[v] for v in G]),
-                    node_color=[float(G.degree(v)) for v in G], cmap='Blues_r',
+                    node_color=[float(G.degree(v)) for v in G],
+                    cmap=mpl.colors.ListedColormap(['#E53374', '#1E88E5', '#FFC107', '#00E0BB'][::-1]),
                     )
             if anno:
                 ax.set(box_aspect=1)
@@ -88,7 +93,7 @@ def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
                               ax=ax,
                               )
     ax.set(xscale='log',  # ylim=(None, 1),
-           xlabel='species PPI set size',
+           xlabel='species interactome size',
            ylabel='homodimer share',
            )
     for i, point in df.iterrows():
@@ -99,6 +104,53 @@ def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
     sns.despine(left=True, bottom=True)
     fig.tight_layout()
     return fig
+
+
+def plot_interactome_sizes(taxonomy: pd.DataFrame,
+                           val_species: Set) -> Figure:
+    tax = taxonomy.copy()
+    tax['species'] = pd.Categorical(tax.species)
+    order = list(tax.species)[::-1]
+    tax['hue'] = tax.species.apply(lambda sp: sp in val_species)
+
+    j = sns.catplot(
+        data=tax,
+        x='n_ppis',
+        y='species',
+        hue='hue',
+        palette={0: '#D81B60', 1: '#1E88E5'},
+        order=order,
+        s=7,
+        height=6,
+        aspect=2,
+        zorder=1000,
+        legend=False
+    )
+    j.set(xscale='log', xlabel='interactome size',
+          ylim=(None, -.5), xlim=(None, max(tax.n_ppis) * 1.4))
+    j.ax.get_yaxis().set_visible(False)
+    j.despine(left=True, bottom=True)
+    j.ax.xaxis.tick_top()
+    j.ax.xaxis.set_label_position('top')
+
+    for i, (idx, row) in enumerate(tax.iterrows()):
+        sp, name, x, hue = row
+        y = len(tax) - i - 1
+        j.ax.text(x * 1.2, y, name, ha='left', va='center', zorder=100)
+        # j.ax.plot([x, x], [y, 0], marker=None, color='gray', lw=.5, alpha=.4)
+
+    j.ax.xaxis.grid(True, 'minor', linewidth=.4, alpha=.6, zorder=0)
+    j.ax.xaxis.grid(True, 'major', linewidth=1, zorder=0)
+
+    j.ax.fill_between([.9] + list(tax.n_ppis) + [1e6],
+                      [28] + [len(tax) - k - 1 for k in range(len(tax))] + [-2],
+                      len(tax) + 2,
+                      zorder=10, color='w')
+    j.tight_layout()
+    j.figure.set_facecolor('white')
+    # for sfx in ['png', 'pdf', 'svg']:
+    #     j.savefig(f'interactome_sizes.{sfx}', dpi=300, transparent=False)
+    return j
 
 
 def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
@@ -146,7 +198,8 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
 def plot_ratio_degree(positives: pd.DataFrame,
                       negatives: pd.DataFrame = None,
                       ratio: float = 10,
-                      ) -> Tuple[Figure, pd.DataFrame]:
+                      taxonomy: pd.DataFrame = None,
+                      ) -> Tuple[Figure, Union[None, Figure], pd.DataFrame]:
     """
     Calculate the similarity between two sets of protein pairs:
     the Spearman or Pearson correlation coefficient between their
@@ -154,7 +207,9 @@ def plot_ratio_degree(positives: pd.DataFrame,
     """
     # TODO test with homodimers to make sure this does not return
     #  node *degrees*, but the ratio of negative to positive edges
+    positives, negatives = positives.copy(), negatives.copy()
     plus, minus = split_pos_neg_plus_minus(positives, negatives)
+    new_negatives = minus.keys() - plus.keys()
     minus.update({k: 0 for k in plus.keys() - minus.keys()})
     sp_lookup = positives[['hash_A', 'hash_B', 'species']].melt(
         id_vars='species')[['value', 'species']].drop_duplicates().set_index(
@@ -182,7 +237,58 @@ def plot_ratio_degree(positives: pd.DataFrame,
     g.figure.set_facecolor('white')
     sns.despine(ax=g.ax_marg_x, left=True)
     sns.despine(ax=g.ax_marg_y, bottom=False)
-    return g.figure, df
+
+    if not new_negatives:
+        return g.figure, None, df
+
+    nsp = (negatives[['hash_A', 'hash_B', 'species']]
+           .melt(id_vars='species', value_name='crc_hash')
+           [['crc_hash', 'species']].value_counts().reset_index()
+           .rename(columns={0: 'degree'}))
+    nsp['species'] = pd.Categorical(nsp.species)
+    nsp['kind'] = nsp.crc_hash.apply(lambda crc: 'proteome'
+    if crc in new_negatives else 'interactome')
+
+    med_degrees = nsp.loc[nsp.kind == 'interactome'].groupby(
+        'species')['degree'].median().to_dict()
+    avg_degrees = nsp.loc[nsp.kind == 'interactome'].groupby(
+        'species')['degree'].mean().to_dict()
+    if taxonomy is None:
+        order = sorted(set(nsp.species))
+    else:
+        order, names = [list(ar) for ar in taxonomy.loc[taxonomy.species.isin(
+            set(nsp.species)), ['species', 'name']].values.T]
+
+    h = sns.catplot(data=nsp,
+                    x='degree',
+                    y='species',
+                    hue='kind',
+                    dodge='True',
+                    order=order,
+                    orient='h',
+                    jitter=.2,
+                    height=5,
+                    aspect=1,
+                    s=1.4,
+                    alpha=.3,
+                    # palette='colorblind',
+                    legend=False,
+                    )
+    h.set(xscale='log')
+    for y, sp in enumerate(order):
+        h.ax.text(avg_degrees[sp], y, '|', va='center', ha='center')
+        h.ax.text(med_degrees[sp], y, '·', va='center', ha='center')
+
+    h.ax.legend(frameon=False, title='', loc=(.15, 1), ncol=2, markerscale=.6)
+    h.set(xlabel='number of negative interactions per protein')
+    if taxonomy is not None:
+        h.set(ylabel='', yticklabels=names)
+
+    h.figure.set_facecolor('white')
+    h.despine(left=True)
+    h.despine(bottom=False)
+
+    return g.figure, h, nsp
 
 
 def plot_ratio_grids(df: pd.DataFrame, order: List = None, ratio: float = 10.0) -> Tuple[Figure, Figure]:

@@ -31,14 +31,14 @@ def rr_pattern_proteomes(species: Set[int],
                          pattern: str = '{sp}.fasta',
                          prefix: str = '',
                          ref_fasta: Path = None,
-                         hval_config: dict = None,
+                         hval_config: Path = None,
                          pretend: bool = False) -> Union[str, None]:
     cmd_lines = list()
     with tqdm(sorted(species)) as pbar:
         for sp in pbar:
             pbar.set_postfix(batch=sp)
             sp_fasta = proteome_dir / pattern.format(sp=sp)
-            # assert sp_fasta.is_file(), f'Missing {sp_fasta}'  # TODO re-enable
+            assert sp_fasta.is_file(), f'Missing {sp_fasta}'
             if ref_fasta is not None:
                 cmd_line = run_uniqueprot2D(
                     sp_fasta, ref_fasta,
