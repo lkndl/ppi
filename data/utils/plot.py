@@ -8,10 +8,13 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
-from data.utils.pairs import fetch_ratios, count_homodimers, \
-    estimate_bias, split_pos_neg_plus_minus
+from data.utils.pairs import fetch_ratios, fetch_degrees, \
+    fetch_degree_frequencies, fetch_n_proteins, \
+    count_homodimers, estimate_bias, split_pos_neg_plus_minus
 
 mpl.rcParams['figure.dpi'] = 200
+sns.reset_defaults()
+sns.set_style({'figure.facecolor': 'None'})
 
 
 @mpl.style.context('seaborn-poster')
@@ -81,53 +84,109 @@ def draw_toy_ppis(ppis: pd.DataFrame,
     return figs[0], figs[1]
 
 
-def plot_homodimer_share(pairs: pd.DataFrame) -> Figure:
+def plot_homodimer_share(pairs: pd.DataFrame, ratio: float = 10.0) -> Figure:
     df = pairs.groupby('species').apply(count_homodimers).reset_index()
-    df[['_count', '_share', '_total']] = df[0].to_list()
+    df[['_count', 'share', 'n_ppis']] = df[0].to_list()
+    df['n_prots'] = df.species.apply(fetch_n_proteins(pairs).to_dict().get)
 
-    fig, ax = plt.subplots(figsize=(8, 3), facecolor='white')
+    df['_diag'] = df.n_prots.apply(lambda n: 2 / (n + 1))
+    df['filled'] = df._count / df.n_prots
+    a = 1 / (ratio + 1)
+    df['enough'] = df.filled.apply(  # 'easy' if n < .5 * a else
+        lambda n: 'yes' if n < a else 'close' if n < 2 * a else 'no')
+
+    # np.asarray(['easy', 'yes', 'close', 'no'])[np.clip(np.asarray(
+    # df.filled.values * (c.ratio  + 1)).astype(int), a_min=0, a_max=2)]
+
+    fig, ax = plt.subplots(figsize=(8, 3), facecolor='None')
     scatter = sns.scatterplot(data=df,
-                              x='_total',
-                              y='_share',
+                              x='n_ppis',
+                              y='share',
+                              hue='filled',
+                              style='enough', style_order=['yes', 'close', 'no'],
                               s=40,
                               ax=ax,
                               )
     ax.set(xscale='log',  # ylim=(None, 1),
-           xlabel='species interactome size',
+           xlabel='number of PPIs per species dataset',
            ylabel='homodimer share',
            )
-    for i, point in df.iterrows():
+
+    ax.legend(bbox_to_anchor=(1, 0), loc='lower left', frameon=False)
+    # handles, labels = fig.axes[0].get_legend_handles_labels()
+    # l1 = handles[:6], labels[:6]
+    # l2 = handles[6:], labels[6:]
+    # l1 = ax.legend(*l1, bbox_to_anchor=(1, 0), loc='lower left', frameon=False)
+    # l2 = ax.legend(*l2, bbox_to_anchor=(1, 1), loc='upper left', frameon=False)
+    # fig.axes[0].add_artist(l1)
+
+    # df = df.sort_values(by='n_ppis')
+    for i, point in enumerate(df.itertuples()):
+        # if i % 2:
+        #     p = 1.05
+        #     q = .03
+        #     ha = 'left'
+        #     va = 'bottom'
+        # else:
+        #     p = .95
+        #     q = -.03
+        #     ha = 'right'
+        #     va = 'top'
+
         ax.annotate(point.species,
-                    (point._total * 1.05,
-                     point._share + .05),
-                    rotation=50, size=6)
+                    (point.n_ppis * 1.05,
+                     point.share + .03),
+                    rotation=50, size=6, zorder=0)
     sns.despine(left=True, bottom=True)
     fig.tight_layout()
     return fig
 
 
+def plot_theoretical_homodimer_share() -> Figure:
+    with sns.plotting_context('poster'):
+        # , mpl.rc_context({'figure.dpi': 64}):  # mpl.style.context('seaborn-poster')
+        x = np.logspace(0, 4.5, 1000)
+        y = 2 / (1 + x)
+        fig, ax = plt.subplots(figsize=(6, 6))  # , facecolor='white')
+        fg = sns.lineplot(x=x, y=y, ax=ax, color='#1E88E5', lw=4)
+        # sns.lineplot(x=x, y=y/11, ax=ax, color='#D81B60', lw=2)
+        # sns.lineplot(x=x, y=2/(x), ax=fg.ax, color='#D81B60')
+        ax.set(xscale='log', xlabel='', ylabel='', box_aspect=1)  # , xticks=[1, 2, 3])
+        ax.set_title('2 / (x + 1)', fontsize=32)
+        # fg.set(xlim=(0, 100))
+        sns.despine(left=True, bottom=True)
+        fig.tight_layout()
+    return fig
+
+
 def plot_interactome_sizes(taxonomy: pd.DataFrame,
-                           val_species: Set) -> Figure:
+                           val_species: Set = None, min_x: int = None) -> Figure:
     tax = taxonomy.copy()
     tax['species'] = pd.Categorical(tax.species)
     order = list(tax.species)[::-1]
-    tax['hue'] = tax.species.apply(lambda sp: sp in val_species)
+    if val_species is not None:
+        tax['set_name'] = tax.species.apply(lambda sp: sp in val_species)
+        pal = {1: '#D81B60', 0: '#1E88E5'}
+    else:
+        assert 'set_name' in tax
+        pal = {'train': '#1E88E5', 'validate': '#D81B60',
+               'test': '#FFC107', 'D-SCRIPT': '#004D40'}
 
     j = sns.catplot(
         data=tax,
         x='n_ppis',
         y='species',
-        hue='hue',
-        palette={0: '#D81B60', 1: '#1E88E5'},
+        hue='set_name',
+        palette=pal,
         order=order,
         s=7,
-        height=6,
+        height=len(set(tax.species)) / 6,
         aspect=2,
         zorder=1000,
-        legend=False
+        legend=True
     )
-    j.set(xscale='log', xlabel='interactome size',
-          ylim=(None, -.5), xlim=(None, max(tax.n_ppis) * 1.4))
+    j.set(xscale='log', xlabel=None,
+          ylim=(None, -.5), xlim=(min_x, max(tax.n_ppis) * 1.4))
     j.ax.get_yaxis().set_visible(False)
     j.despine(left=True, bottom=True)
     j.ax.xaxis.tick_top()
@@ -153,8 +212,9 @@ def plot_interactome_sizes(taxonomy: pd.DataFrame,
     return j
 
 
+@mpl.style.context('seaborn-talk')
 def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
-              bias: pd.DataFrame, ratio: float = 10.0) -> Figure:
+              bias: pd.DataFrame, ratio: float = 10.0, pal: bool = False) -> Figure:
     s = 'species'
     bias = (bias.merge(plus.groupby(s)['label'].size(), on=s)
             .merge(minus.groupby(s)['label'].size(), on=s))
@@ -163,22 +223,22 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
     cmap = sns.cubehelix_palette(rot=-.2, as_cmap=True)
     bias['bias'] = bias.bias.astype(float)
 
-    fig, ax = plt.subplots(figsize=(6, 4.4), facecolor='white')
+    fig, ax = plt.subplots(figsize=(5, 4))
     scatter = sns.scatterplot(data=bias,
                               ax=ax,
                               x='positives', y='negatives',
-                              hue='bias', palette=cmap,
+                              hue='bias', palette=cmap if pal else None,
                               # aspect=1, height=4,
                               s=40, alpha=.8,
                               zorder=99,
                               )
 
-    for i, point in bias.iterrows():
-        if point.negatives < 10000:
-            ax.annotate(point.species,
-                        (point.positives * 1.4,
-                         point.negatives * .9),
-                        rotation=0, size=6)
+    # for i, point in bias.iterrows():
+    #     if point.negatives < 10000:
+    #         ax.annotate(point.species,
+    #                     (point.positives * 1.4,
+    #                      point.negatives * .9),
+    #                     rotation=0, size=6)
 
     ax.set(xscale='log', yscale='log')
     ax.xaxis.grid(True, 'minor', linewidth=.2, alpha=.6, zorder=0)
@@ -187,19 +247,48 @@ def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
     ax.yaxis.grid(True, 'major', linewidth=.5, zorder=0)
     sns.despine(fig, left=True, bottom=True)
     ax.set(box_aspect=1)
-    ax.axline((1, ratio), (100, 100 * ratio), lw=1,
-              alpha=.5, zorder=1)
+    ax.axline((1, ratio), (100, 100 * ratio), lw=.5,
+              alpha=.6, zorder=1, color='black')
     ax.legend(frameon=False, bbox_to_anchor=(1, 1),
-              title='set bias', loc='upper left')
+              title='bias', loc='upper left')
     fig.tight_layout()
     return fig
+
+
+four = ['#D81B60', '#1E88E5', '#FFC107', '#004D40']
+five_continous = ['#648FFF', '#785EF0', '#DC267F', '#FE6100', '#FFB000']
+eight = ['#000000', '#E69F00', '#56B4E9', '#009E73',
+         '#F0E442', '#0072B2', '#D55E00', '#CC79A7']
+
+
+def plot_degree_distribution(pairs: pd.DataFrame,
+                             height: float = 2.4) -> Figure:
+    pairs = fetch_degree_frequencies(pairs)
+    cats = pairs.species.cat.categories
+    pal = four if len(cats) <= 4 else eight
+
+    fg = sns.relplot(data=pairs,
+                     s=10, alpha=.8,
+                     x='degree',
+                     y='frequency',
+                     hue='species',
+                     # legend=False,
+                     aspect=1,
+                     height=height,
+                     palette=dict(zip(cats, pal)) if len(cats) <= 8 else 'colorblind',
+                     )
+    fg.set(xscale='log', yscale='log', box_aspect=1)
+    sns.despine(left=True, bottom=True)
+    fg.tight_layout()
+    return fg
 
 
 def plot_ratio_degree(positives: pd.DataFrame,
                       negatives: pd.DataFrame = None,
                       ratio: float = 10,
                       taxonomy: pd.DataFrame = None,
-                      ) -> Tuple[Figure, Union[None, Figure], pd.DataFrame]:
+                      ) -> Tuple[Figure, Union[None, Figure],
+                                 pd.DataFrame, Union[None, pd.DataFrame]]:
     """
     Calculate the similarity between two sets of protein pairs:
     the Spearman or Pearson correlation coefficient between their
@@ -222,7 +311,7 @@ def plot_ratio_degree(positives: pd.DataFrame,
                       marginal_ticks=True, height=5, space=0, ratio=6,
                       palette='colorblind')
     g.plot_joint(sns.scatterplot, legend=False,
-                 s=25, alpha=.8
+                 s=25, alpha=.8, rasterized=True
                  )
     g.plot_marginals(sns.kdeplot, warn_singular=False)
     g.ax_joint.set(  # xlim=(ratio - 4, ratio + 4),
@@ -235,11 +324,12 @@ def plot_ratio_degree(positives: pd.DataFrame,
     g.ax_marg_x.set(yticks=[])
     g.ax_marg_y.set(xticks=[])
     g.figure.set_facecolor('white')
+    # sns.despine(ax=g.ax_joint, left=False, bottom=False, right=False, top=False)
     sns.despine(ax=g.ax_marg_x, left=True)
     sns.despine(ax=g.ax_marg_y, bottom=False)
 
     if not new_negatives:
-        return g.figure, None, df
+        return g.figure, None, df, None
 
     nsp = (negatives[['hash_A', 'hash_B', 'species']]
            .melt(id_vars='species', value_name='crc_hash')
@@ -248,6 +338,14 @@ def plot_ratio_degree(positives: pd.DataFrame,
     nsp['species'] = pd.Categorical(nsp.species)
     nsp['kind'] = nsp.crc_hash.apply(lambda crc: 'proteome'
     if crc in new_negatives else 'interactome')
+
+    psp = (positives[['hash_A', 'hash_B', 'species']]
+           .melt(id_vars='species', value_name='crc_hash')
+           [['crc_hash', 'species']].value_counts().reset_index()
+           .rename(columns={0: 'degree'}))
+    psp['species'] = pd.Categorical(psp.species)
+    psp['kind'] = 'positives'
+    nsp = pd.concat((nsp, psp))
 
     med_degrees = nsp.loc[nsp.kind == 'interactome'].groupby(
         'species')['degree'].median().to_dict()
@@ -273,22 +371,75 @@ def plot_ratio_degree(positives: pd.DataFrame,
                     alpha=.3,
                     # palette='colorblind',
                     legend=False,
+                    rasterized=True,
                     )
-    h.set(xscale='log')
+    h.set(xscale='log', box_aspect=1, xlabel='pairs per protein')
     for y, sp in enumerate(order):
-        h.ax.text(avg_degrees[sp], y, '|', va='center', ha='center')
-        h.ax.text(med_degrees[sp], y, '·', va='center', ha='center')
+        h.ax.text(avg_degrees[sp], y, '|', va='center', ha='center',
+                  fontsize='large', fontweight='black')
+        h.ax.text(med_degrees[sp], y, '·', va='center', ha='center',
+                  fontsize='large', fontweight='black')
 
-    h.ax.legend(frameon=False, title='', loc=(.15, 1), ncol=2, markerscale=.6)
-    h.set(xlabel='number of negative interactions per protein')
+    h.ax.legend(frameon=False, title='', loc=(.15, 1), ncol=3, markerscale=.5)
+    h.set(xlabel='pairs per protein')
     if taxonomy is not None:
         h.set(ylabel='', yticklabels=names)
 
-    h.figure.set_facecolor('white')
-    h.despine(left=True)
-    h.despine(bottom=False)
+    bo = False
+    h.despine(left=bo, top=bo, right=bo, bottom=bo)
+    return g.figure, h, df, nsp
 
-    return g.figure, h, nsp
+
+def plot_degrees_wide(ppis: pd.DataFrame,
+                      negs: pd.DataFrame,
+                      tax: pd.DataFrame = None,
+                      dodge: bool = False,
+                      species: List = None) -> Figure:
+    tdf = (fetch_degrees(negs).merge(fetch_degrees(ppis),
+                                     on=['crc_hash', 'species'], how='left')
+           .rename(columns=dict(degree_x='negatives', degree_y='positives')))
+    tdf['kind'] = tdf.positives.apply(lambda p: 'proteome' if pd
+                                      .isna(p) else 'interactome')
+    tdf.positives = tdf.positives.fillna(0)
+    tdf = tdf.convert_dtypes()
+    tdf['degree'] = tdf.negatives + tdf.positives
+
+    if species:
+        tdf = tdf.loc[tdf.species.isin(species)]
+        tdf.species = tdf.species.cat.remove_unused_categories()
+
+    if tax is None:
+        order = list(tdf.species.value_counts().index)
+    else:
+        order, names = [list(ar)[::-1] for ar in tax.loc[tax.species.isin(
+            set(tdf.species)), ['species', 'name']].values.T]
+
+    asp = 4
+    h = sns.catplot(data=tdf,
+                    x='degree',
+                    y='species',
+                    hue='kind',
+                    dodge=dodge,
+                    order=order,
+                    orient='h',
+                    jitter=.3,
+                    height=2.5,
+                    aspect=asp,
+                    s=2.4,
+                    alpha=.3,
+                    # palette='colorblind',
+                    legend=False,
+                    rasterized=True,
+                    )
+    h.set(xscale='log', box_aspect=1 / asp, xlabel='pairs per protein')
+    h.ax.legend(frameon=False, title='', markerscale=.5, loc=(.15, 1), ncol=2)
+    if tax is not None:
+        h.set(ylabel='', yticklabels=names)
+
+    bo = True
+    h.despine(left=bo, top=bo, right=bo, bottom=bo)
+    h.tight_layout()
+    return h
 
 
 def plot_ratio_grids(df: pd.DataFrame, order: List = None, ratio: float = 10.0) -> Tuple[Figure, Figure]:

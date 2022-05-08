@@ -12,16 +12,20 @@ from tqdm import tqdm
 from data.utils.general import run_uniqueprot, run_uniqueprot2D, get_seq_hash, glob_type
 
 
-def filter_proteomes_by_len(fasta_dir: Path, min_len: int = 50,
-                            max_len: int = 1500) -> None:
+def filter_proteomes(fasta_dir: Path, min_len: int = 50,
+                     max_len: int = 1500, blacklist_fasta: Path = None) -> None:
+    blacklist = {r.id for r in SeqIO.parse(blacklist_fasta, 'fasta')} if blacklist_fasta else set()
     for fasta in tqdm(glob_type(fasta_dir, '.fasta')):
-        Path.unlink(fasta.with_suffix('.fasta.bak'), missing_ok=True)
-        records = SeqIO.to_dict(SeqIO.parse(fasta, 'fasta'))
-        shutil.move(fasta, fasta.with_suffix('.fasta.bak'))
+        bak = fasta.with_suffix('.fasta.bak')
+        if not bak.is_file():
+            # if there is no backup, make one
+            shutil.move(fasta, bak)
+        # if there was or is now, fall back to it anyway
+        records = SeqIO.to_dict(SeqIO.parse(bak, 'fasta'))
         with fasta.open('w') as handle:
             for _id in sorted(records.keys()):
                 record = records[_id]
-                if len(record) < min_len or len(record) > max_len:
+                if len(record) < min_len or len(record) > max_len or _id in blacklist:
                     continue
                 SeqIO.write(record, handle, 'fasta')
 
@@ -102,8 +106,8 @@ def parse_val_proteome(fasta: Path) -> Dict[int, Dict[str, SeqRecord]]:
 
 
 def get_proteome_seqs(proteome: Dict[int, Dict[str, Dict]],
-                               fasta: Dict[str, SeqRecord],
-                               negatives: pd.DataFrame) -> Dict[str, SeqRecord]:
+                      fasta: Dict[str, SeqRecord],
+                      negatives: pd.DataFrame) -> Dict[str, SeqRecord]:
     negatives = negatives.copy().melt(
         id_vars=['species', 'label'], value_name='crc_hash')[['species', 'crc_hash']]
     extra_crcs = negatives.loc[~negatives.crc_hash.isin(

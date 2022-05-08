@@ -33,7 +33,7 @@ def filter_ppis_and_fasta_by_len(
         loss_minl, orient='index', columns=['loss'])
                  .reset_index().rename(columns=dict(index='len')))
 
-    fig, axes = plt.subplots(1, 3, figsize=(8, 2.8), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(8, 2.8), sharey=True, facecolor='None')
 
     ax = axes[0]
     sns.ecdfplot(fasta_lens.values(), legend=False, ax=ax)

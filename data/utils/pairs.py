@@ -50,7 +50,8 @@ def make_negatives(ppis: pd.DataFrame,
                               pd.DataFrame, Union[Figure, None]]:
     negatives, bias, fig, _ = find_negative_pairs(ppis, cfg, proteome)
     ppis['label'] = 1
-    ppis = ppis[[c for c in ppis.columns if c not in ('minlen', 'maxlen')]]
+    ppis = ppis[[c for c in ppis.columns if c not in
+                 ('minlen', 'maxlen', 'degree_0', 'degree_1', 'n_seqs')]]
     sp = 9606 if 'species' not in ppis.columns else ppis.species.unique()[0]
     if 'species' not in negatives.columns:
         negatives['species'] = sp
@@ -73,6 +74,32 @@ def fetch_ratios(pairs: pd.DataFrame) -> pd.DataFrame:
     dt = dt.explode('degree')
     dt[['x', 'degree']] = dt.degree.tolist()
     return dt
+
+
+def fetch_degrees(pairs: pd.DataFrame, as_dict: bool = False
+                  ) -> Union[pd.DataFrame, Dict[str, int]]:
+    pairs = (pairs[['hash_A', 'hash_B', 'species']]
+             .melt(id_vars='species', value_name='crc_hash')
+             .iloc[:, [0, 2]].value_counts()
+             .reset_index().rename(columns={0: 'degree'})
+             )
+    if not as_dict:
+        pairs['species'] = pd.Categorical(pairs.species)
+        return pairs
+    else:
+        return pairs.iloc[:, [1, 2]].set_index('crc_hash').to_dict()['degree']
+
+
+def fetch_degree_frequencies(pairs: pd.DataFrame) -> pd.DataFrame:
+    pairs = (fetch_degrees(pairs).iloc[:, [0, 2]]
+             .value_counts().reset_index()
+             .rename(columns={0: 'frequency'}))
+    pairs['species'] = pd.Categorical(pairs.species)
+    return pairs
+
+
+def fetch_n_proteins(pairs: pd.DataFrame) -> pd.DataFrame:
+    return fetch_degrees(pairs).species.value_counts()
 
 
 def count_homodimers(pairs: pd.DataFrame) -> Tuple[int, float, int]:
@@ -240,15 +267,14 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     if not quiet or not len(negatives):
         tqdm.write(f'{sp}: {len(negatives)}/{limit // 2} interactome negatives')
 
-    if np.any(np.greater(np.unique(
-            negs, return_counts=True)[1], counts * cfg.ratio)):
-        print(f'{sp}: found proteins with too many negatives')
-
     idcs = np.flatnonzero(mat[:, n])
     extra = np.vstack((idcs, -mat[idcs, n])).T
+    rng = np.random.default_rng(seed=cfg.seed + sp + 1)
     if len(extra) and proteome:
         min_extra = np.max(extra[:, 1])
         extra_interactions = np.sum(extra[:, 1])
+        if hasattr(cfg, 'legacy') and cfg.legacy:
+            ideal_neg_med = np.mean(counts)  # * cfg.ratio
         avg_extra = np.ceil(extra_interactions / ideal_neg_med).astype(int)
         available = len(proteome[sp].keys() - uniq_true.keys())
         n_extra = min(available, max(min_extra, avg_extra))
@@ -259,8 +285,9 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
                   f'Try to create {extra_interactions} interactions, '
                   f'ideally {ideal_neg_med} per protein.')
 
-        extra_proteins = list(rng.choice(list(proteome[sp].keys() - uniq_true.keys()),
-                                         size=n_extra, replace=False))
+        extra_proteins = list(rng.choice(
+            sorted(list(proteome[sp].keys() - uniq_true.keys())),
+            size=n_extra, replace=False))
         extra_pairs = list()
         for p_idx, n_partners in extra:
             # for each protein missing negatives, try to find as many as necessary
