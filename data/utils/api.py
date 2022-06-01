@@ -113,57 +113,57 @@ def uniprot_api_fetch(uniprot_ids: Union[set, list],
         to_fasta(_hash_, _seq_, _hashf_)
         to_fasta(_nid_, _seq_, _seqf_)
 
+    print(file_hash(out_file.with_suffix('.fasta')), out_file.with_suffix('.fasta'))
     # print(f'{b * 8}')
-    with out_file.with_suffix('.hash.fasta').open('a') as hash_fasta, \
-            out_file.with_suffix('.fasta').open('a') as seq_fasta:
-        for _id in tqdm(set(from_to.loc[from_to.crc_hash == '', 'To'])
-                        - m_dict.keys(), desc='fetch UniParc'):
-            r = requests.get(uniparc_url.format(_id))
-            if not r.ok:
-                errors.append(f'uniparc: {_id}')
-                continue
+    if uniparcs := (set(from_to.loc[from_to.crc_hash == '', 'To']) - m_dict.keys()):
+        with out_file.with_suffix('.hash.fasta').open('a') as hash_fasta, \
+                out_file.with_suffix('.fasta').open('a') as seq_fasta:
+            print(' '.join(sorted(uniparcs)))
+            for _id in tqdm(sorted(uniparcs), desc='fetch UniParc'):
+                r = requests.get(uniparc_url.format(_id))
+                if not r.ok:
+                    errors.append(f'uniparc: {_id}')
+                    continue
 
-            new_id = ''
-            _, *upi_lines = r.text.strip().split('\n')
-            for line in upi_lines:
-                upi, alt_ids = line.split('\t')
-                alt_ids = {a.strip() for a in alt_ids.split(';')}
+                _, *upi_lines = r.text.strip().split('\n')
+                alt_ids = set()
+                for line in upi_lines:
+                    upi, _ids = line.split('\t')
+                    alt_ids |= {a for a in {a.strip() for a in _ids.split(';')}
+                                if a and not obs(a)}
                 # prefer already seen IDs
-                alt_ids = sorted([a for a in alt_ids if a and not obs(a)],
-                                 key=known, reverse=True)
+                alt_ids = sorted(sorted(alt_ids), key=known, reverse=False)
                 for new_id in alt_ids:
                     # fetch a record
                     r = requests.get(entry_url.format(new_id))
                     if not r.ok:
-                        errors.append(f'uniparc 1: {_id}: {new_id}')
+                        errors.append(f'uniparc 1: {_id}~{new_id}')
                         continue
 
                     _save_(r.text, _id, new_id, 'uniparc', hash_fasta, seq_fasta)
                     break
-                if new_id:
-                    break
+        _refresh_and_save_from_to_()
 
-    _refresh_and_save_from_to_()
-    with out_file.with_suffix('.hash.fasta').open('a') as hash_fasta, \
-            out_file.with_suffix('.fasta').open('a') as seq_fasta:
-        for _id in tqdm(set(from_to.loc[from_to.crc_hash == '', 'To'])
-                        - m_dict.keys(), desc='fetch isoforms/archive'):
-            source = 'isoform' if '-' in _id else 'entry'
-            r = requests.get(entry_url.format(_id))
-            if not r.ok:
-                errors.append(f'{source}: {_id}')
-                continue
-            if not r.text:
-                r = requests.get(archive_url.format(_id))
-                source += '-archive'
-            _save_(r.text, _id, _id, source, hash_fasta, seq_fasta)
+    if isoforms := (set(from_to.loc[from_to.crc_hash == '', 'To']) - m_dict.keys()):
+        with out_file.with_suffix('.hash.fasta').open('a') as hash_fasta, \
+                out_file.with_suffix('.fasta').open('a') as seq_fasta:
+            print(' '.join(sorted(isoforms)))
+            for _id in tqdm(sorted(isoforms), desc='fetch isoforms/archive'):
+                source = 'isoform' if '-' in _id else 'entry'
+                r = requests.get(entry_url.format(_id))
+                if not r.ok:
+                    errors.append(f'{source}: {_id}')
+                    continue
+                if not r.text:
+                    r = requests.get(archive_url.format(_id))
+                    source += '-archive'
+                _save_(r.text, _id, _id, source, hash_fasta, seq_fasta)
+        _refresh_and_save_from_to_()
 
     if errors:
         print('\n'.join(errors))
         for e in errors:
             m_dict[e.split(':')[-1].strip()] = ['', '']
-
-    _refresh_and_save_from_to_()
 
     simple_from_to = from_to.iloc[:, [0, 2]].copy().set_index('From').to_dict()['crc_hash']
     with open(out_file.with_suffix('.json'), 'w') as json_file:
@@ -319,11 +319,17 @@ def fetch_proteomes(species: set,
         'Got multiple/no proteomes for some species'
 
     if missing := species - set(tab['Organism ID']):
-        if missing == {37296}:
+        if 37296 in missing:
             s = ['UP000097197', 'Human herpesvirus 8 (HHV-8)', 37296, 72, '', 'Standard', '']
             tab = pd.concat([tab, pd.DataFrame(s, index=tab.columns).T])
-        else:
-            raise ValueError(f'Missing proteomes: {" ".join(missing)}')
+            missing.remove(37296)
+        if 10600 in missing:
+            s = ['UP000007676', 'Human papillomavirus type 6b', 10600,
+                 9, '', 'Outlier (high value)', 'full']
+            tab = pd.concat([tab, pd.DataFrame(s, index=tab.columns).T])
+            missing.remove(10600)
+    if missing:
+        raise ValueError(f'Missing proteomes: {" ".join((str(j) for j in missing))}')
 
     proteome_dir.mkdir(exist_ok=True, parents=True)
     proteome_url = 'https://www.uniprot.org/uniprot/?format=fasta&query=proteome:'
