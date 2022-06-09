@@ -1,8 +1,9 @@
 import hashlib
 import json
+import shutil
 import subprocess as cmd
 from pathlib import Path
-from typing import Set, Iterable, Union, Dict, IO
+from typing import Iterable, Union, IO
 
 from Bio.Seq import Seq
 from Bio.SeqUtils.CheckSum import crc64
@@ -37,7 +38,7 @@ class DoesNotContain(Exception):
 
 def glob_type(directory: Union[str, Path],
               suffix: str, relax: bool = False,
-              recursive: bool = False) -> Set[Path]:
+              recursive: bool = False) -> set[Path]:
     """
     Glob inside a directory for files matching the given suffix.
     Throws an exception if no matches are found and not told to relax.
@@ -59,7 +60,7 @@ def glob_type(directory: Union[str, Path],
 
 def glob_types(directory: Union[str, Path],
                suffixes: Iterable,
-               recursive: bool = False) -> Set[Path]:
+               recursive: bool = False) -> set[Path]:
     files = set()
     for suffix in suffixes:
         try:
@@ -82,6 +83,9 @@ def run_uniqueprot(input_file: Union[str, Path],
             str(input_file), str(output_file)]
     if pretend:
         return ' '.join(args)
+    elif Path(input_file).stat().st_size == 0:
+        print(f'{input_file} is empty, creating dummy!')
+        shutil.copy(input_file, output_file)
     else:
         cmd_run(args, verbose=verbose)
 
@@ -109,15 +113,15 @@ def to_fasta(_id: Union[str, int], seq: str, file_handle: IO) -> None:
     _ = file_handle.write(''.join(to_lines(_id, seq)))
 
 
-def write_json(_dict: Dict, _json: Union[str, Path]) -> Dict:
-    with Path(_json).open('w') as json_file:
+def write_json(_dict: dict, _json_path: Union[str, Path]) -> dict:
+    with Path(_json_path).open('w') as json_file:
         json.dump(_dict, json_file, indent=2)
     return _dict
 
 
-def read_json(_json: Union[str, Path]) -> Dict:
+def read_json(_json_path: Union[str, Path]) -> dict:
     return {int(k): v for k, v in json.load(
-        _json.open('r')).items()}
+        Path(_json_path).open('r')).items()}
 
 
 def to_lines(_id: str, seq: Union[str, Seq], lw: int = 60) -> str:

@@ -3,7 +3,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from typing import Union, Tuple, Dict
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -85,7 +85,7 @@ def extract_apid_ppis(
         .drop_duplicates()
 
 
-def extract_huri_ppis(psi_path: Union[str, Path]) -> Tuple[pd.DataFrame, Dict]:
+def extract_huri_ppis(psi_path: Union[str, Path]) -> tuple[pd.DataFrame, dict]:
     huri = pd.read_csv(psi_path, sep='\t', header=None).iloc[:, [0, 1]]
 
     all_ids = {'ensembl': set(), 'uniprotkb': set()}
@@ -102,12 +102,22 @@ def ppis_from_string(raw: str) -> pd.DataFrame:
     return pd.read_csv(io.StringIO(raw), sep='\t', header=None)
 
 
-def ppis_to_hashes(ppis: pd.DataFrame, json_path: Path) -> pd.DataFrame:
+def ppis_to_hashes(ppis: pd.DataFrame, json_path: Path,
+                   horizontal_sort: bool = True,
+                   dedup: bool = False) -> pd.DataFrame:
     with json_path.open('r') as json_file:
         lookup = json.load(json_file)
     ppis = ppis.copy()
     _to_hash = np.vectorize(lookup.get)
     ppis.iloc[:, [0, 1]] = _to_hash(ppis.iloc[:, [0, 1]])
     ppis.columns = ['hash_A', 'hash_B'] + list(ppis.columns)[2:]
-    ppis.species = ppis.species.astype('int64')
-    return dedup_pairs(ppis).sort_values(by=['species', 'hash_A', 'hash_B'])
+    if 'species' in ppis.columns:
+        ppis.species = ppis.species.astype('int64')
+    if horizontal_sort:
+        ppis = dedup_pairs(ppis)
+    ppis = ppis.sort_values(
+        by=['hash_A', 'hash_B']
+           + (['species'] if 'species' in ppis.columns else []))
+    if dedup:
+        ppis = ppis.drop_duplicates().reset_index(drop=True)
+    return ppis

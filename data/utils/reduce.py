@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from typing import Tuple, Dict, Union
+from typing import Union
 
 import matplotlib as mpl
 import numpy as np
@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 def filter_ppis_and_fasta_by_len(
         ppis: pd.DataFrame, fasta: dict,
         min_seq_len: int = 50, max_seq_len: int = 800
-) -> Tuple[pd.DataFrame, dict, Figure]:
+) -> tuple[pd.DataFrame, dict, Figure]:
     fasta_lens = {_id: len(seq) for _id, seq in fasta.items()}
     fetch_len = np.vectorize(fasta_lens.get)
     lens = fetch_len(ppis.iloc[:, [0, 1]])
@@ -72,8 +72,8 @@ def dedup_pairs(pairs: pd.DataFrame) -> pd.DataFrame:
     return pairs.drop_duplicates()
 
 
-def shrink_both_ways(pairs: pd.DataFrame, seqs: Dict
-                     ) -> Tuple[pd.DataFrame, Dict]:
+def shrink_both_ways(pairs: pd.DataFrame, seqs: dict
+                     ) -> tuple[pd.DataFrame, dict]:
     pair_ids = set(np.unique(pairs.iloc[:, [0, 1]]))
     seq_ids = set(seqs)
     # arithmetics

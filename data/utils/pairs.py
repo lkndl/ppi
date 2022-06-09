@@ -1,6 +1,6 @@
 import concurrent.futures
 from pathlib import Path
-from typing import Union, Tuple, Set, Dict
+from typing import Union, Callable
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -13,6 +13,7 @@ from scipy import stats
 from tqdm import tqdm
 
 from data.utils.cfg import Config, CorrelationType
+from data.utils.general import get_seq_hash
 
 mpl.rcParams['figure.dpi'] = 200
 
@@ -45,8 +46,8 @@ def make_c_classes(test_tsv: Union[str, Path],
 
 def make_negatives(ppis: pd.DataFrame,
                    cfg: Config,
-                   proteome: Dict[int, Dict[str, str]] = None,
-                   ) -> Tuple[pd.DataFrame, pd.DataFrame,
+                   proteome: dict[int, dict[str, str]] = None,
+                   ) -> tuple[pd.DataFrame, pd.DataFrame,
                               pd.DataFrame, Union[Figure, None]]:
     negatives, bias, fig, _ = find_negative_pairs(ppis, cfg, proteome)
     ppis['label'] = 1
@@ -77,7 +78,7 @@ def fetch_ratios(pairs: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_degrees(pairs: pd.DataFrame, as_dict: bool = False
-                  ) -> Union[pd.DataFrame, Dict[str, int]]:
+                  ) -> Union[pd.DataFrame, dict[str, int]]:
     pairs = (pairs[['hash_A', 'hash_B', 'species']]
              .melt(id_vars='species', value_name='crc_hash')
              .iloc[:, [0, 2]].value_counts()
@@ -102,13 +103,13 @@ def fetch_n_proteins(pairs: pd.DataFrame) -> pd.DataFrame:
     return fetch_degrees(pairs).species.value_counts()
 
 
-def count_homodimers(pairs: pd.DataFrame) -> Tuple[int, float, int]:
+def count_homodimers(pairs: pd.DataFrame) -> tuple[int, float, int]:
     homod = len(pairs.loc[pairs.hash_A == pairs.hash_B])
     return homod, np.round(homod / len(pairs), 4), len(pairs)
 
 
-def make_validation_species(pairs: pd.DataFrame, species: Set[int]
-                            ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def make_validation_species(pairs: pd.DataFrame, species: set[int]
+                            ) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = pairs.loc[pairs.species.isin(species)]
     pairs = pairs.loc[~pairs.species.isin(species)].copy()
     train_ids = set(np.unique(pairs.iloc[:, [0, 1]]))
@@ -118,7 +119,7 @@ def make_validation_species(pairs: pd.DataFrame, species: Set[int]
 
 def make_validation_split(pairs: pd.DataFrame,
                           val_set_size: float = .5, seed: int = 42,
-                          ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                          ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(seed=seed)
     i, j = 0, 0
     val_proteins = set()
@@ -159,8 +160,8 @@ def find_negative_pairs_tuple(args):
 
 
 def find_negative_pairs(true_ppis: pd.DataFrame,
-                        cfg: Config, proteome: Dict[int, Dict[str, str]] = None,
-                        quiet: bool = False) -> Tuple[pd.DataFrame, Union[float, np.ndarray],
+                        cfg: Config, proteome: dict[int, dict[str, str]] = None,
+                        quiet: bool = False) -> tuple[pd.DataFrame, Union[float, np.ndarray],
                                                       Union[Figure, None], int]:
     # recursive call for multi-species case
     if 'species' in true_ppis.columns and len(set(true_ppis.species)) > 1:
@@ -199,15 +200,13 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     uniq_true = {_id: idx for idx, _id in enumerate(
         np.unique(true_ppis.iloc[:, [0, 1]]))}
     uniq_neg = {idx: _id for _id, idx in uniq_true.items()}
-    indexize = np.vectorize(uniq_true.get)
-    unindex = np.vectorize(uniq_neg.get)
-    idx_ppis = indexize(true_ppis.iloc[:, [0, 1]])
+    forward = np.vectorize(uniq_true.get)
+    reverse = np.vectorize(uniq_neg.get)
+    idx_ppis = forward(true_ppis.iloc[:, [0, 1]])
 
     # np.unique returns sorted values, so this works out
     proteins, counts = np.unique(true_ppis.iloc[:, [0, 1]], return_counts=True)
     n = len(proteins)
-    vertices = np.array(range(n))
-    indices = np.array(range(n + 1))
 
     rng = np.random.default_rng(seed=cfg.seed + sp)
 
@@ -216,12 +215,12 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
         wants = np.full_like(wants, np.floor(sum(counts) * cfg.ratio / n)).astype(int)
 
     # make sure that `wants` is an integer vector and its sum as close to the target as possible
-    idcs = list(rng.choice(vertices, size=n, replace=True, p=counts / sum(counts)))
+    idcs = list(rng.choice(n, size=n, replace=True, p=counts / sum(counts)))
     while np.round(sum(counts) * cfg.ratio) > sum(wants):
         idx = idcs.pop(0)
         wants[idx] += 1
 
-    ideal_neg_med = np.median(wants)
+    ideal_neg_med = np.median(wants) + np.median(counts)
     wants = np.append(wants, 0)
     limit = sum(wants)
 
@@ -238,13 +237,13 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
 
     with tqdm(total=limit, position=0, desc=str(sp), disable=disable) as pbar:
         while np.sum(wants[:n]):
-            x = rng.choice(vertices, size=1, replace=False, p=wants[:n] / sum(wants[:n]))[0]
+            x = rng.choice(n, size=1, replace=False, p=wants[:n] / sum(wants[:n]))[0]
             wants[x] -= 1
             wants[-1] = max(0, 2 * wants[x] - (mat[x, :n] == 0) @ wants[:n])
             p_proteome = np.append((mat[x, :n] == 0) * wants[:n], wants[n])
             if not np.sum(p_proteome):
                 p_proteome[-1] = 1
-            y = rng.choice(indices, size=1, p=p_proteome / sum(p_proteome))[0]
+            y = rng.choice(n + 1, size=1, p=p_proteome / sum(p_proteome))[0]
             mat[y, x] -= 1  # tolerant against y=n
             if x != y:
                 mat[x, y] -= 1
@@ -261,51 +260,23 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     else:
         fig = None
 
+    # extract negative edges from the upper triangle
     negs = np.vstack(np.nonzero(np.triu(mat, k=0) < 0)).T
-    negs = negs[(negs[:, 0] < n) & (negs[:, 1] < n)]  # filter out the last col
-    negatives = pd.DataFrame(unindex(negs)) if len(negs) else pd.DataFrame()
+    # filter out the last column
+    negs = negs[(negs[:, 0] < n) & (negs[:, 1] < n)]
+    # convert back to crc64 hashes
+    negatives = pd.DataFrame(reverse(negs)) if len(negs) else pd.DataFrame()
     if not quiet or not len(negatives):
         tqdm.write(f'{sp}: {len(negatives)}/{limit // 2} interactome negatives')
 
+    # look up the indices of potential extra/proteome negatives
     idcs = np.flatnonzero(mat[:, n])
     extra = np.vstack((idcs, -mat[idcs, n])).T
-    rng = np.random.default_rng(seed=cfg.seed + sp + 1)
     if len(extra) and proteome:
-        min_extra = np.max(extra[:, 1])
-        extra_interactions = np.sum(extra[:, 1])
-        if hasattr(cfg, 'legacy') and cfg.legacy:
-            ideal_neg_med = np.mean(counts)  # * cfg.ratio
-        avg_extra = np.ceil(extra_interactions / ideal_neg_med).astype(int)
-        available = len(proteome[sp].keys() - uniq_true.keys())
-        n_extra = min(available, max(min_extra, avg_extra))
-        if not quiet:
-            print(f'{sp}: need {min_extra} extra proteins for {len(extra)} hubs; '
-                  f'select {n_extra} from {available}/{len(proteome[sp])} '
-                  f'(new/available) SwissProt proteins. '
-                  f'Try to create {extra_interactions} interactions, '
-                  f'ideally {ideal_neg_med} per protein.')
-
-        extra_proteins = list(rng.choice(
-            sorted(list(proteome[sp].keys() - uniq_true.keys())),
-            size=n_extra, replace=False))
-        extra_pairs = list()
-        for p_idx, n_partners in extra:
-            # for each protein missing negatives, try to find as many as necessary
-            p = uniq_neg[p_idx]
-            partners = rng.choice(extra_proteins, size=min(
-                n_partners, len(extra_proteins)), replace=False)
-            # the new, *proteome* interaction partner is always in the second column
-            extra_pairs.extend([(p, partner) for partner in partners])
-
-        extras = pd.DataFrame(extra_pairs)
-        if not quiet:
-            print('proteome interactions:')
-            print(pd.DataFrame(np.unique(extras.iloc[:, 1],
-                                         return_counts=True)[1])
-                  .describe().round(2).T)
-        # extra_crcs = set(extras.iloc[:, 1])
-        negatives = pd.concat((negatives, extras))
-
+        negatives = pd.concat((negatives, find_proteome_negative_pairs(
+            extra, set(proteome[sp]) - set(uniq_true), sp, cfg.seed, reverse,
+            np.mean(counts) if hasattr(cfg, 'legacy') and cfg.legacy else ideal_neg_med,
+            not quiet, False)[0]))
     if not len(negatives):
         if not quiet:
             print(f'{sp}: got 0 negatives!')
@@ -317,10 +288,52 @@ def find_negative_pairs(true_ppis: pd.DataFrame,
     return negatives, bias, fig, sp
 
 
+def find_proteome_negative_pairs(extra: np.ndarray,
+                                 proteome_ids: set[str],
+                                 sp: int, seed: int,
+                                 idx_to_crc: Callable,
+                                 ideal_median: float,
+                                 verbose: bool = True,
+                                 quiet: bool = False,
+                                 ) -> tuple[pd.DataFrame, int]:
+    rng = np.random.default_rng(seed=seed + sp + 1)
+    min_extra = np.max(extra[:, 1])
+    extra_interactions = np.sum(extra[:, 1])
+    avg_extra = np.ceil(extra_interactions / ideal_median).astype(int)
+    n_extra = min(len(proteome_ids), max(min_extra, avg_extra))
+    if verbose:
+        print(f'{sp}: need {min_extra} extra proteins for {len(extra)} hubs; '
+              f'select {n_extra} from {len(proteome_ids)} additional proteins. '
+              f'Try to create {extra_interactions} interactions, '
+              f'ideally {ideal_median} per protein.')
+
+    extra_proteins = list(rng.choice(sorted(proteome_ids), size=n_extra, replace=False))
+    if not quiet:
+        tqdm.write(f'{sp} extras hash: {get_seq_hash(":".join(extra_proteins))[4:]}')
+
+    extra_pairs = list()
+    for p_idx, n_partners in extra:
+        # for each protein missing negatives, try to find as many as necessary
+        p = idx_to_crc(p_idx)
+        partners = rng.choice(extra_proteins, size=min(
+            n_partners, len(extra_proteins)), replace=False)
+        # the new, *proteome* interaction partner is always in the second column
+        extra_pairs.extend([(p, partner) for partner in partners])
+
+    extras = pd.DataFrame(extra_pairs)
+    if verbose:
+        print('proteome interactions:')
+        print(pd.DataFrame(np.unique(extras.iloc[:, 1],
+                                     return_counts=True)[1])
+              .describe().round(2).T)
+    # extra_crcs = set(extras.iloc[:, 1])
+    return extras, extra_interactions - len(extras)
+
+
 def estimate_bias(positives: pd.DataFrame,
                   negatives: pd.DataFrame = None,
                   corrtype: CorrelationType = CorrelationType.PEARSON,
-                  ) -> Tuple[float, float]:
+                  ) -> tuple[float, float]:
     """
     Calculate the similarity between two sets of protein pairs:
     the Spearman or Pearson correlation coefficient between their
@@ -342,7 +355,7 @@ def estimate_bias(positives: pd.DataFrame,
 
 def split_pos_neg_plus_minus(positives: pd.DataFrame,
                              negatives: Union[pd.DataFrame, None]
-                             ) -> Tuple[Dict, Dict]:
+                             ) -> tuple[dict, dict]:
     if negatives is None:
         assert 'label' in positives.columns
         negatives = positives.loc[positives.label == 0].copy()
@@ -370,3 +383,9 @@ def find_multi_species_proteins(ppis: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(np.vstack(dfs), columns=['UniprotID', 'species']) \
         .drop_duplicates().groupby('UniprotID') \
         .agg({'species': lambda l: sorted(l.astype(int).tolist())}).reset_index()
+
+
+def ppis_to_sp_lookup(ppis: pd.DataFrame) -> dict[str, int]:
+    return (ppis[['hash_A', 'hash_B', 'species']]
+        .melt(id_vars='species')[['species', 'value']]
+        .set_index('value').to_dict()['species'])

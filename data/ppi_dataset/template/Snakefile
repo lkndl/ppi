@@ -22,21 +22,56 @@ rule all:
         # then delete it so this runs again
         'rm done'
 
+rule all_hds:
+    input:
+        # request a dummy file
+        'done_hds'
+    shell:
+        # then delete it so this runs again
+        'rm done_hds'
+
+rule all_isp:
+    input:
+        # request a dummy file
+        'done_isp'
+    shell:
+        # then delete it so this runs again
+        'rm done_isp'
+
 rule request:
     input:
-        cwd / '9606_nr_test.fasta',
-        cwd / '9606_rr_test.fasta',
+        cwd / '9606_rr_valtest.fasta',
         expand(cwd / '{species}_nr_val.fasta',
-            species=set(config['val_species'] + config['train_species'])),
+            species=set(config['val_species'] + config['train_species'] + [9606])),
         expand(cwd / '{species}_nr_valtest.fasta',
-            species=set(config['train_species'])),
+            species=set(config['train_species'] + [9606])),
         expand(cwd / '{species}_rr_val.fasta',
             species=set(config['val_species'])),
     output:
         file='done'
     run:
         # touch this dummy file
-        open(output.file,'w')
+        open(output.file, 'w')
+
+rule request_hds:
+    input:
+        expand(cwd / '{species}_rr_val_hds_proteins.fasta',
+            species=set(config['test_species'])),
+    output:
+        file='done_hds'
+    run:
+        # touch this dummy file
+        open(output.file, 'w')
+
+rule request_isp:
+    input:
+        expand(cwd / '{species}_rr_val_isp_proteins.fasta',
+            species=set(config['test_species'])),
+    output:
+        file='done_isp'
+    run:
+        # touch this dummy file
+        open(output.file, 'w')
 
 rule nr_9606:
     input:
@@ -86,6 +121,58 @@ rule red_reduce:
     run:
         run_uniqueprot(
             input_file=input.fasta,
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_hds:
+    input:
+        fasta=cwd / '{species}_nr_val.fasta'
+    output:
+        fasta=cwd / '{species}_nr_val_hds.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['hd_rr_fasta'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_hds_proteins:
+    input:
+        fasta=cwd / '{species}_nr_val_hds.fasta'
+    output:
+        fasta=cwd / '{species}_nr_val_hds_proteins.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['hds_proteins'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_isp:
+    input:
+        fasta=cwd / '{species}_nr_val.fasta'
+    output:
+        fasta=cwd / '{species}_nr_val_isp.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['isp_rr_fasta'],
+            output_file=output.fasta,
+            hval_config=hval_config,
+        )
+
+rule cluster_against_isp_proteins:
+    input:
+        fasta=cwd / '{species}_nr_val_isp.fasta'
+    output:
+        fasta=cwd / '{species}_nr_val_isp_proteins.fasta'
+    run:
+        run_uniqueprot2D(
+            input_file=input.fasta,
+            database_file=config['isp_proteins'],
             output_file=output.fasta,
             hval_config=hval_config,
         )

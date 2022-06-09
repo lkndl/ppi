@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Set, List, Union
+from typing import Union
 
 import matplotlib as mpl
 import networkx as nx
@@ -19,10 +19,10 @@ sns.set_style({'figure.facecolor': 'None'})
 
 @mpl.style.context('seaborn-poster')
 def draw_toy_ppis(ppis: pd.DataFrame,
-                  n_dict: Dict[str, pd.DataFrame],
+                  n_dict: dict[str, pd.DataFrame],
                   seed: int = 42,
-                  extra_nodes: Set = None
-                  ) -> Tuple[Figure, Figure]:
+                  extra_nodes: set = None
+                  ) -> tuple[Figure, Figure]:
     if not extra_nodes:
         extra_nodes = set()
 
@@ -160,7 +160,7 @@ def plot_theoretical_homodimer_share() -> Figure:
 
 
 def plot_interactome_sizes(taxonomy: pd.DataFrame,
-                           val_species: Set = None, min_x: int = None) -> Figure:
+                           val_species: set = None, min_x: int = None) -> Figure:
     tax = taxonomy.copy()
     tax['species'] = pd.Categorical(tax.species)
     order = list(tax.species)[::-1]
@@ -287,7 +287,7 @@ def plot_ratio_degree(positives: pd.DataFrame,
                       negatives: pd.DataFrame = None,
                       ratio: float = 10,
                       taxonomy: pd.DataFrame = None,
-                      ) -> Tuple[Figure, Union[None, Figure],
+                      ) -> tuple[Figure, Union[None, Figure],
                                  pd.DataFrame, Union[None, pd.DataFrame]]:
     """
     Calculate the similarity between two sets of protein pairs:
@@ -394,7 +394,7 @@ def plot_degrees_wide(ppis: pd.DataFrame,
                       negs: pd.DataFrame,
                       tax: pd.DataFrame = None,
                       dodge: bool = False,
-                      species: List = None) -> Figure:
+                      species: list = None) -> Figure:
     tdf = (fetch_degrees(negs).merge(fetch_degrees(ppis),
                                      on=['crc_hash', 'species'], how='left')
            .rename(columns=dict(degree_x='negatives', degree_y='positives')))
@@ -442,7 +442,7 @@ def plot_degrees_wide(ppis: pd.DataFrame,
     return h
 
 
-def plot_ratio_grids(df: pd.DataFrame, order: List = None, ratio: float = 10.0) -> Tuple[Figure, Figure]:
+def plot_ratio_grids(df: pd.DataFrame, order: list = None, ratio: float = 10.0) -> tuple[Figure, Figure]:
     g = sns.relplot(data=df,
                     x='ratio', y='degree',  # hue='species',
                     col='species', col_wrap=5,
@@ -535,7 +535,7 @@ def plot_test_ratios(test_all: pd.DataFrame, ratio: float = 10.0,
 
 
 @mpl.style.context('seaborn-whitegrid')
-def plot_c_classes(df: pd.DataFrame) -> Tuple[Figure, Dict[int, int]]:
+def plot_c_classes(df: pd.DataFrame) -> tuple[Figure, dict[int, int]]:
     fig, ax = plt.subplots(figsize=(4, 3), facecolor='white')
     bg = sns.countplot(
         x=df.cclass,
@@ -553,3 +553,69 @@ def plot_c_classes(df: pd.DataFrame) -> Tuple[Figure, Dict[int, int]]:
     ax2.set(ylabel='share')
     sns.despine(ax=ax2, left=True, right=True)
     return fig, dict(vc)
+
+
+# @mpl.style.context('seaborn-whitegrid')
+def plot_interspecies_loss(ppis_without: pd.DataFrame,
+                           ppis_with: pd.DataFrame,
+                           taxonomy: pd.DataFrame = None
+                           ) -> tuple[Figure, pd.DataFrame]:
+    """
+    Feed in two dataframes; one with and one without interspecies interactions.
+    :param ppis_without:
+    :param ppis_with:
+    :param taxonomy:
+    :return:
+    """
+    dk, dq = [d.species.value_counts().reset_index().rename(
+        columns=dict(index='species', species='n_ppis')) for d in [ppis_without, ppis_with]]
+    dq = dk.merge(dq, on='species', how='outer')
+    dq = dq.fillna(0)
+
+    dq['lost'] = dq.n_ppis_y - dq.n_ppis_x
+    dq['share'] = dq.lost / dq.n_ppis_y
+    dq = dq.merge(taxonomy[['species', 'name']], on='species', how='left')
+    dq = dq.fillna('')
+    dq.species = pd.Categorical(dq.species)
+    dq = dq.convert_dtypes()
+
+    # fig, axes = plt.subplots(1, 2, figsize=(4, 6), sharey=True, facecolor='None')
+    # sns.pointplot(data=dq, x='lost', y='species',
+    #               color='#1E88E5', scale=.5,
+    #               ax=axes[0], join=False, legend=False)
+    # axes[0].set(xscale='log', xlabel='absolute loss',
+    #             ylabel=('' if taxonomy is not None else 'species'))
+    #
+    # sns.pointplot(data=dq, x='share', y='species',
+    #               color='#D81B60', scale=.5,
+    #               ax=axes[1], join=False, legend=False)
+    # axes[1].set(xlabel='relative loss', ylabel='',
+    #             xticks=[0, .25, .5, .75, 1],
+    #             xticklabels=['0', '.25', '.5', '.75', '1'])
+    # if taxonomy is not None:
+    #     axes[1].set(yticklabels=list(taxonomy.loc[taxonomy.species.isin(
+    #         dq.species)].sort_values(by='species')['name']))
+    # sns.despine(fig, left=True, bottom=True)
+    # axes[0].grid(zorder=0)
+    # axes[1].grid(zorder=0)
+
+    fig, ax = plt.subplots(figsize=(8, 3), facecolor='None')
+    scatter = sns.scatterplot(data=dq,
+                              x='lost',
+                              y='share',
+                              s=40,
+                              ax=ax,
+                              )
+    ax.set(xscale='log',  # ylim=(None, 1),
+           xlabel='number of inter-species PPIs per species dataset',
+           ylabel='inter-species share',
+           )
+    for i, point in enumerate(dq.itertuples()):
+        ax.annotate(point.species,
+                    (point.lost * 1.05,
+                     point.share + .03),
+                    rotation=50, size=6, zorder=0)
+    sns.despine(left=True, bottom=True)
+    fig.tight_layout()
+
+    return fig, dq
