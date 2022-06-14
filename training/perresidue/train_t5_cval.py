@@ -35,13 +35,13 @@ def eval_model(model: InteractionMap,
                                   position=0, leave=True, ascii=True):
                 loss, batch_size, prediction = step_model(
                     model, n0, n1, y, embeddings, weight=interaction_weight, evaluate=True)
-                predictions.append(prediction.detach().cpu())  # TODO evtl die detaches hier oben machen
+                predictions.append(prediction.detach().cpu())
                 labels.append(y.float().detach().cpu())
-                eval_loss += loss
+                eval_loss += loss.item()   # TODO oder evtl loss.detach().cpu()
                 num_seqs += batch_size
 
             labels = torch.cat(labels, 0)
-            predictions = torch.cat(predictions, 0)  # .to(device).float().detach().cpu()
+            predictions = torch.cat(predictions, 0)
 
             bin_predictions = ((.5 * torch.ones(num_seqs)) < predictions).float()
             utils.log_stats(eval_loss, labels, eval_counter,
@@ -70,15 +70,14 @@ def train_model(model: InteractionMap,
     tb_train_logger, *tb_val_loggers = tb_loggers
 
     def evaluate(old_loss, eval_counter, decline):
-        # dasch isch für öarli schdopping
         return_loss, return_decline = old_loss, decline  # decline: wie oft wurde es nicht besser eh klar
         new_eval_loss, num_eval_seqs_now = eval_model(model, eval_counter, validation_dataloaders, embeddings,
                                                       interaction_weight, logger, tb_val_loggers)
         if new_eval_loss <= old_loss:
             return_decline = 0
             return_loss = new_eval_loss
-            utils.save_model(model_save_path, model_name, 'best', model, optim, return_loss / num_seqs, epoch,
-                             eval_counter)
+            utils.save_model(model_save_path, model_name, 'best', model, optim,
+                             return_loss / num_eval_seqs_now, epoch, eval_counter)
             logger.info(f"Saving model to {model_save_path}")
         else:
             return_decline += 1
@@ -135,7 +134,7 @@ def train_model(model: InteractionMap,
                 loss, b, _ = step_model(model, z0, z1, y, embeddings,
                                         weight=interaction_weight, evaluate=False)
                 num_seqs += b
-                epoch_loss += loss
+                epoch_loss += loss.item()
 
                 loss.backward()
                 optim.step()
@@ -145,7 +144,7 @@ def train_model(model: InteractionMap,
                     model.clip()  # wie numpy aber parameter custom anpassen. funktion ist von denen selber implementiert
 
                 tb_train_logger.add_scalar(
-                    "Loss Batch Train", loss / b, batch_idx)
+                    "Loss Batch Train", loss.item() / b, batch_idx)
                 utils.flush_loggers(tb_loggers)
                 utils.wipe_memory()
 

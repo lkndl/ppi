@@ -93,7 +93,7 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
         eval_pr = skl.precision_score(labels, bin_predictions)
         eval_re = skl.recall_score(labels, bin_predictions)
         eval_f1 = skl.f1_score(labels, bin_predictions)
-        eval_aupr = skl.average_precision(labels, predictions)
+        eval_aupr = skl.average_precision_score(labels, predictions)
         eval_mcc = skl.matthews_corrcoef(labels, bin_predictions)
 
         logger.info(

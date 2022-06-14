@@ -22,7 +22,7 @@ def get_model(model_type, cache_dir, device):
     print(f'Using huggingface from: {transformer_link}')
 
     model = encoder.from_pretrained(transformer_link,
-                                    cache_dir=cache_dir)
+                                    cache_dir=cache_dir)  # TODO half precision torch_dtype=torch.float(16)
     model = model.to(device)
     model = model.eval()
     vocab = tokenizer.from_pretrained(transformer_link,

@@ -12,6 +12,12 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 from logging import Logger
+import sys
+
+ppi_path = str(Path(__file__).resolve().parents[2])
+if ppi_path not in sys.path:
+    sys.path.append(ppi_path)
+    print(ppi_path)
 
 from interaction import InteractionMap, InteractionMapDscript
 from utils.dataloader import get_training_dataloader, DataLoader

@@ -1,12 +1,14 @@
+import argparse
 import sys
 from pathlib import Path
 
-ppi_path = Path(__file__).resolve().parent.parent.parent.parent
-sys.path.append(str(ppi_path))
-
-import argparse
-from data.embedding.t5_embedd import embed_from_fasta
 import torch
+
+ppi_path = str(Path(__file__).resolve().parents[2])
+if ppi_path not in sys.path:
+    sys.path.append(ppi_path)
+
+from t5_embedd import embed_from_fasta
 
 
 def add_args(parser):
@@ -17,6 +19,7 @@ def add_args(parser):
     parser.add_argument('--half', help='Use half-precision', default=True)
     parser.add_argument('--model', choices=['t5', 'bert'], default='t5',
                         help='Create either ProtT5 or ProtBert embeddings')
+    parser.add_argument('--cache_dir', default=Path.cwd() / 'cache')
     return parser
 
 
@@ -27,8 +30,7 @@ def main(args):
     per_protein = args.prot
     half_precision = args.half
 
-    cache_dir = '/mnt/project/ppi-t5/' \
-                + ('t5_xl_weights' if args.model == 't5' else 'prot_bert_bfd_weights')
+    cache_dir = args.cache_dir or ('t5_xl_weights' if args.model == 't5' else 'prot_bert_bfd_weights')
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print('Using device: {}'.format(device))
     embed_from_fasta(args.seqs, fastaRef, outPath, cache_dir,

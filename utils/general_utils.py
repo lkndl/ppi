@@ -12,7 +12,7 @@ import hashlib
 
 from sklearn import metrics as skl
 
-from training.perresidue.train_t5_cval import device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def set_seed(seed):
@@ -81,7 +81,7 @@ def log_stats(eval_loss, labels, eval_counter,
     metrics.append(('Pr', skl.precision_score(labels, bin_predictions)))
     metrics.append(('Re', skl.recall_score(labels, bin_predictions)))
     metrics.append(('F1', skl.f1_score(labels, bin_predictions)))
-    metrics.append(('AUPR', skl.average_precision(labels, predictions)))
+    metrics.append(('AUPR', skl.average_precision_score(labels, predictions)))
     metrics.append(('MCC', skl.matthews_corrcoef(labels, bin_predictions)))
 
     [tb_logger.add_scalar(f'{t[0].lower() if lower else t[0]}{sfx}', t[1],
@@ -90,7 +90,6 @@ def log_stats(eval_loss, labels, eval_counter,
 
 
 def getlogger(logging_path, name=''):
-
     logging_path.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ def getlogger(logging_path, name=''):
     logger.addHandler(fh)
 
     sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(logging.INFO)
+    sh.setLevel(logging.DEBUG)
     sh.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(sh)
 
