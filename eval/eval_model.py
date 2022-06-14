@@ -1,19 +1,15 @@
-import sys
-from pathlib import Path
-
-ppi_path = Path(__file__).resolve().parent.parent
-sys.path.append(str(ppi_path))
 import argparse
+from pathlib import Path
+from time import perf_counter
+
+import h5py
 import pandas as pd
 import torch
-import h5py
-
 import torch.nn as nn
-from sklearn.metrics import average_precision_score as average_precision, precision_score, \
-    recall_score, f1_score, accuracy_score, matthews_corrcoef as mcc
+from sklearn import metrics as skl
 from tqdm.auto import tqdm
-from time import perf_counter
-from utils.general_utils import getlogger
+
+from utils import general_utils as utils
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 MODEL_RESIDUE, MODEL_PROT = 'perresidue', 'perprot'
@@ -68,10 +64,10 @@ def load_data(eval_set_paths, emb_paths, model_type):
 def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_name):
     logger.info(f' Evaluation {test_name} for model {model_name} '.center(120, '+'))
     model.eval()
-    outFile = open(save_path.joinpath(f'predictions_{test_name}_{model_name}.tsv'), "w+")
 
     start_inference = perf_counter()
-    with torch.no_grad():
+    with torch.no_grad(), \
+            open(save_path / f'predictions_{test_name}_{model_name}.tsv', 'w+') as out_file:
         predictions, labels = [], []
         eval_loss, num_pairs = 0, 0
 
@@ -84,22 +80,21 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
             prediction = model.predict(p0, p1).item()
             predictions.append(prediction)
             labels.append(label)
-            print("{}\t{}\t{}\t{:.5}".format(n0, n1, label, prediction), file=outFile)
+            out_file.write(f'{n0}\t{n1}\t{label}\t{prediction:.5}')
         end_inference = perf_counter()
 
         predictions = torch.Tensor(predictions)
         labels = torch.Tensor(labels)
         eval_loss = nn.BCELoss()(predictions, labels)
 
-        threshold = .5
-        bin_predictions = ((threshold * torch.ones(num_pairs)) < predictions).float()
+        bin_predictions = ((.5 * torch.ones(num_pairs)) < predictions).float()
 
-        eval_acc = accuracy_score(labels, bin_predictions)
-        eval_pr = precision_score(labels, bin_predictions)
-        eval_re = recall_score(labels, bin_predictions)
-        eval_f1 = f1_score(labels, bin_predictions)
-        eval_aupr = average_precision(labels, predictions)
-        eval_mcc = mcc(labels, bin_predictions)
+        eval_acc = skl.accuracy_score(labels, bin_predictions)
+        eval_pr = skl.precision_score(labels, bin_predictions)
+        eval_re = skl.recall_score(labels, bin_predictions)
+        eval_f1 = skl.f1_score(labels, bin_predictions)
+        eval_aupr = skl.average_precision(labels, predictions)
+        eval_mcc = skl.matthews_corrcoef(labels, bin_predictions)
 
         logger.info(
             f'loss: {eval_loss}, acc: {eval_acc}, aupr: {eval_aupr}\npr: {eval_pr}, re: {eval_re}, f1: {eval_f1}, mcc: {eval_mcc}')
@@ -121,17 +116,17 @@ def main(args):
     for model_path in model_paths:
         model = torch.load(model_path).to(device)
 
-        output_creation_dir = args.output_creation_dir or model_path.parent
-        model_name = str(model_path.stem)
+        out_dir = args.output_creation_dir or model_path.parent
+        model_name = model_path.stem
 
         for test_set, test_file in zip(test_sets, test_files):
-            test_name = str(test_file.stem)
+            test_name = test_file.stem
 
-            eval_path = args.eval_path or output_creation_dir.joinpath(f'eval/{test_name}')
+            eval_path = args.eval_path or out_dir / 'eval' / test_name
             Path.mkdir(eval_path, parents=True, exist_ok=True)
 
-            logging_path = args.logging_path or eval_path.joinpath(f'{test_name}_{model_name}.log')
-            logger = getlogger(logging_path, name=f'{model_name}{test_name}')
+            logging_path = args.logging_path or eval_path / f'{test_name}_{model_name}.log'
+            logger = utils.getlogger(logging_path, name=f'{model_name}{test_name}')
             logger.info(
                 f'Number parameters {model_name}: {sum([p.numel() for p in model.parameters() if p.requires_grad])}')
             eval_model(model, test_set, embeddings, logger, eval_path, test_name, model_name)

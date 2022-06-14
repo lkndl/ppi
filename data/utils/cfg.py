@@ -2,7 +2,6 @@ import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Set
 
 from dataclass_wizard import JSONWizard
 
@@ -50,9 +49,9 @@ class Config(JSONWizard):
     strategy: SamplingStrategy = SamplingStrategy.BALANCED
 
     val_set_size: float = .1
-    val_species: Set[str] = field(default_factory=set)
-    train_species: Set[str] = field(default_factory=set)
-    test_species: Set[str] = field(default_factory=set)
+    val_species: set[str] = field(default_factory=set)
+    train_species: set[str] = field(default_factory=set)
+    test_species: set[str] = field(default_factory=set)
 
     val_raw_fasta: Path = ap / 'apid_validation_raw.fasta'
     val_raw_tsv: Path = ap / 'apid_validation_raw.tsv'

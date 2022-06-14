@@ -1,119 +1,14 @@
-import sys
-from pathlib import Path
-
-ppi_path = Path(__file__).resolve().parent.parent.parent
-sys.path.append(str(ppi_path))
-
 import argparse
-import numpy as np
-from tqdm.auto import tqdm
+from time import perf_counter
 
 import torch
-import torch.nn as nn
-from torch.optim import Adam
-from torch.autograd import Variable
-from sklearn.metrics import average_precision_score as average_precision, precision_score, \
-    recall_score, f1_score, accuracy_score, matthews_corrcoef as mcc
-from utils.general_utils import wipe_memory, getlogger, get_hash
-from utils.dataloader_cval import get_training_dataloader
-from torch.utils.tensorboard import SummaryWriter
-from time import perf_counter
-from training.perprot.network import Attention, ProjectedAttention, MLP, Linear
-import json
+from tqdm.auto import tqdm
+
+from train_perprot import step_model, add_args, main
+from training.perresidue.train_t5 import checkpoint_model
+from utils import general_utils as utils
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-
-def set_seed(seed):
-    """
-    Set the random seed.
-    """
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-
-
-def add_args(parser):
-    """
-    Create parser for command line utility.
-
-    :meta private:
-    """
-
-    data_grp = parser.add_argument_group("Data")
-    train_grp = parser.add_argument_group("Training")
-    misc_grp = parser.add_argument_group("Output and Device")
-
-    # Data
-    data_grp.add_argument("--train", help="Training data")
-    data_grp.add_argument("--val", help="Validation data")
-    data_grp.add_argument("--embedding", help="h5 file with embedded sequences")
-    data_grp.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True)
-
-    train_grp.add_argument("--num_epochs", type=int, default=4, help="Number of epochs (default: 10)")
-    train_grp.add_argument("--batch_size", type=int, default=50, help="Minibatch size (default: 25)")
-    train_grp.add_argument("--weight_decay", type=float, default=0, help="L2 regularization (default: 0)")
-    train_grp.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
-
-    # Output
-    misc_grp.add_argument("--checkpoint_att", help="Checkpoint model to start training from")
-    misc_grp.add_argument("--checkpoint_proj", help="Checkpoint model to start training from")
-    misc_grp.add_argument("--checkpoint_mlp", help="Checkpoint model to start training from")
-    misc_grp.add_argument("--checkpoint_linear", help="Checkpoint model to start training from")
-    misc_grp.add_argument('--output_creation_dir', type=Path, required=False, default='.')
-    misc_grp.add_argument('--logging_path', type=Path, required=False)
-    misc_grp.add_argument('--tensorboard_path', type=Path, required=False)
-    misc_grp.add_argument('--model_save_path', type=Path, required=False)
-
-    attention_model_grp = parser.add_argument_group("Attention Model")
-    projattention_model_grp = parser.add_argument_group("ProjectedAttention Model")
-    mlp_model_grp = parser.add_argument_group("MLP Model")
-    linear_model_grp = parser.add_argument_group("Linear Model")
-
-    attention_model_grp.add_argument("--attention", default=True, action=argparse.BooleanOptionalAction)
-    attention_model_grp.add_argument("--att_embed_dim", type=int, default=1024)
-    attention_model_grp.add_argument("--att_num_heads", type=int, default=8)
-    attention_model_grp.add_argument("--att_num_layers", type=int, default=2)
-    attention_model_grp.add_argument("--att_dim_feedforward", type=int, default=1024)
-    attention_model_grp.add_argument('--att_model_name', type=str, required=False)
-    attention_model_grp.add_argument("--att_config", help="Load config")
-
-    projattention_model_grp.add_argument("--projattention", default=True, action=argparse.BooleanOptionalAction)
-    projattention_model_grp.add_argument("--proj_embed_dim", type=int, default=1024)
-    projattention_model_grp.add_argument("--proj_projection_dim", type=int, default=128)
-    projattention_model_grp.add_argument("--proj_num_heads", type=int, default=8)
-    projattention_model_grp.add_argument("--proj_num_layers", type=int, default=2)
-    projattention_model_grp.add_argument("--proj_dim_feedforward", type=int, default=128)
-    projattention_model_grp.add_argument('--proj_model_name', type=str, required=False)
-    projattention_model_grp.add_argument("--proj_config", help="Load config")
-
-    mlp_model_grp.add_argument("--mlp", default=True, action=argparse.BooleanOptionalAction)
-    mlp_model_grp.add_argument("--mlp_embed_dim", type=int, default=1024)
-    mlp_model_grp.add_argument("--mlp_projection_dim", type=int, default=256)
-    mlp_model_grp.add_argument("--mlp_hidden_dim", type=int, default=128)
-    mlp_model_grp.add_argument('--mlp_model_name', type=str, required=False)
-    mlp_model_grp.add_argument("--mlp_config", help="Load config")
-
-    linear_model_grp.add_argument("--linear", default=True, action=argparse.BooleanOptionalAction)
-    linear_model_grp.add_argument("--linear_embed_dim", type=int, default=1024)
-    linear_model_grp.add_argument('--linear_model_name', type=str, required=False)
-    linear_model_grp.add_argument("--linear_config", help="Load config")
-
-    return parser
-
-
-def step(model, n0, n1, y, embeddings, eval=False):
-    emb0, emb1 = get_emb(n0, embeddings).to(device), get_emb(n1, embeddings).to(device)
-    predictions = nn.Sigmoid()(model(emb0, emb1))
-    y = Variable(y).float().unsqueeze(-1).to(device)
-
-    loss = nn.BCELoss()(predictions.float(), y)
-    batch_size = len(predictions)
-
-    if eval:
-        return loss, batch_size, predictions, y
-    return loss, batch_size
 
 
 def eval_model(model, eval_counter, pairs_val_dataloaders, embeddings, logger, tensorboard_logger):
@@ -123,12 +18,13 @@ def eval_model(model, eval_counter, pairs_val_dataloaders, embeddings, logger, t
         # classes = {'c1': 0, 'c2': 0, 'c3': 0}
         # metrics = {'acc': classes.copy(), 'pr': classes.copy(), 're': classes.copy(), 'f1': classes.copy(),
         #            'aupr': classes.copy(), 'mcc': classes.copy()}
-        for cc_class, pairs_val_dataloader in enumerate(pairs_val_dataloaders, 1):
+        for cclass, pairs_val_dataloader in enumerate(pairs_val_dataloaders, 1):
             predictions, labels = [], []
             eval_loss, num_seqs = 0, 0
-            for n0, n1, y in tqdm(pairs_val_dataloader, total=len(pairs_val_dataloader), desc=f'Evaluation {eval_counter}',
+            for n0, n1, y in tqdm(pairs_val_dataloader, total=len(pairs_val_dataloader),
+                                  desc=f'Evaluation {eval_counter}',
                                   position=0, leave=True, ascii=True):
-                loss, batch_size, prediction, label = step(model, n0, n1, y, embeddings, eval=True)
+                loss, batch_size, prediction, label = step_model(model, n0, n1, y, embeddings, evaluate=True)
                 predictions.append(prediction)
                 labels.append(label)
                 eval_loss += loss
@@ -137,39 +33,17 @@ def eval_model(model, eval_counter, pairs_val_dataloaders, embeddings, logger, t
             labels = torch.cat(labels, 0).view(-1).to(device).float().detach().cpu()
             predictions = torch.cat(predictions, 0).view(-1).to(device).float().detach().cpu()
 
-            threshold = .5
-            bin_predictions = ((threshold * torch.ones(num_seqs)) < predictions).float()
-
-            eval_acc = accuracy_score(labels, bin_predictions)
-            eval_pr = precision_score(labels, bin_predictions)
-            eval_re = recall_score(labels, bin_predictions)
-            eval_f1 = f1_score(labels, bin_predictions)
-            eval_aupr = average_precision(labels, predictions)
-            eval_mcc = mcc(labels, bin_predictions)
-
-            # tensorboard_logger.add_scalar("Loss Epoch Val", eval_loss, eval_counter)
-            # tensorboard_logger.add_scalar("Accuracy Epoch Val", eval_acc, eval_counter)
-            # tensorboard_logger.add_scalar("Precision Epoch Val", eval_pr, eval_counter)
-            # tensorboard_logger.add_scalar("Recall Epoch Val", eval_re, eval_counter)
-            # tensorboard_logger.add_scalar("F1 Epoch Val", eval_f1, eval_counter)
-            # tensorboard_logger.add_scalar("AUCPR Epoch Val", eval_aupr, eval_counter)
-            # tensorboard_logger.add_scalar("MCC Epoch Val", eval_mcc, eval_counter)
-            tensorboard_logger.add_scalar(f"loss/C{cc_class}", eval_loss, eval_counter)
-            tensorboard_logger.add_scalar(f'acc/C{cc_class}', eval_acc, eval_counter)
-            tensorboard_logger.add_scalar(f'pr/C{cc_class}', eval_pr, eval_counter)
-            tensorboard_logger.add_scalar(f're/C{cc_class}', eval_re, eval_counter)
-            tensorboard_logger.add_scalar(f'f1/C{cc_class}', eval_f1, eval_counter)
-            tensorboard_logger.add_scalar(f'aupr/C{cc_class}', eval_aupr, eval_counter)
-            tensorboard_logger.add_scalar(f'mcc/C{cc_class}', eval_mcc, eval_counter)
-            logger.info(
-                f'loss/C{cc_class}: {eval_loss}, acc/C{cc_class}: {eval_acc}, aupr/C{cc_class}: {eval_aupr}\n'
-                f'pr/C{cc_class}: {eval_pr}, re/C{cc_class}: {eval_re}, f1/C{cc_class}: {eval_f1}, mcc/C{cc_class}: {eval_mcc}')
+            bin_predictions = ((.5 * torch.ones(num_seqs)) < predictions).float()
+            utils.log_stats(eval_loss, labels, eval_counter,
+                            bin_predictions, predictions,
+                            tensorboard_logger, logger, sfx=f'/C{cclass}', lower=True)
 
     return eval_loss, num_seqs
 
 
-def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloaders, embeddings,
-                logger, tensorboard_logger, model_save_path, model_name, evaluation_loss=None, start_epoch=0):
+def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloaders,
+                embeddings, logger, tensorboard_logger, model_save_path, model_name,
+                evaluation_loss=None, start_epoch=0):
     logger.info(' Train new model '.center(50, '#'))
     logger.info(f'{model}')
 
@@ -182,7 +56,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
         if new_eval_loss <= old_loss:
             return_decline = 0
             return_loss = new_eval_loss
-            save_model(model_save_path, model_name, 'best', model, optim, return_loss / num_seqs, epoch)
+            utils.save_model(model_save_path, model_name, 'best', model, optim, return_loss / num_seqs, epoch)
             logger.info(f"# Saving model to {model_save_path}")
         else:
             return_decline += 1
@@ -217,7 +91,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
                     eval_total_timer += perf_counter() - eval_time_start
 
                     if decline >= patience:
-                        raise NotImplementedError(" Termination due to patience exceedance! ".center(100, '!'))
+                        raise utils.PatienceExceededError('Termination due to patience exceedance! '.center(100, '!'))
 
                     train_epoch_start = perf_counter()
                 if iterations_counter % (max(int(.025 * value_rounder(len(pairs_train_dataloader), 3)), 1)) == 0:
@@ -229,7 +103,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
                                      save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
-                loss, b = step(model, z0, z1, y, embeddings, eval=False)
+                loss, b = step_model(model, z0, z1, y, embeddings, evaluate=False)
                 num_seqs += b
                 epoch_loss += loss
 
@@ -258,7 +132,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
                 tensorboard_logger.add_histogram(f'{name}.grad', weight.grad, epoch + 1)
             epoch_train_time += perf_counter() - train_epoch_start
             train_total_timer += epoch_train_time
-    except NotImplementedError:
+    except utils.PatienceExceededError:
         logger.info(" Termination due to patience exceedance! ".center(100, '!'))
     total_time = perf_counter() - total_time
     logger.info(' Time Elapsed '.center(100, '*'))
@@ -268,7 +142,7 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
     logger.info('-----------')
     logger.info(f'Train Time per Epoch in s per Pair: {train_total_timer / num_epochs / num_train_seqs}')
     logger.info(f'Evaluation Time per Evaluation in s per Pair: {eval_total_timer / eval_counter / num_eval_seqs}')
-    save_final(model_save_path, model_name)
+    utils.save_final(model_save_path, model_name)
 
 
 def def_custom_scalar(tensorboard_logger):
@@ -285,260 +159,6 @@ def def_custom_scalar(tensorboard_logger):
     }
 
     tensorboard_logger.add_custom_scalars(layout)
-
-
-def get_emb(keys_list, emb_dict):
-    return torch.cat([emb_dict[key] for key in keys_list], dim=0)
-
-
-def save_model(model_save_path, model_name, model_text, model, optimizer, loss, epoch):
-    model.cpu()
-    torch.save({
-        'model': model,
-        'optimizer': optimizer,
-        'loss': loss,
-        'epoch': epoch
-    }, f'{model_save_path}/{model_name}_{model_text}.pth')
-    model.to(device)
-    wipe_memory()
-
-
-def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch, model, optimizer, loss, save_epoch=False):
-    digits = int(np.floor(np.log10(num_max_epoch))) + 1
-    save_path = model_save_path.joinpath(f'checkpoint/')
-    save_path.mkdir(parents=True, exist_ok=True)
-    save_model(save_path, model_name, f'epoch{str(epoch + 1).zfill(digits)}{"_checkpoint" if not save_epoch else ""}', model, optimizer, loss, epoch)
-
-
-def save_final(model_save_path, model_name):
-    best_checkpoint = torch.load(f'{model_save_path}/{model_name}_best.pth')
-    model_to_save = best_checkpoint['model']
-    torch.save(model_to_save, f'{model_save_path}/{model_name}_final.pth')
-
-
-def get_optim(model, lr, weight_decay):
-    params = [p for p in model.parameters() if p.requires_grad]
-    optim = Adam(params, lr=lr, weight_decay=weight_decay)
-    return optim
-
-
-def load_model_from_check(checkpoint):
-    checkpoint = torch.load(checkpoint)
-    model = checkpoint['model']
-    optim = checkpoint['optimizer']
-    evaluation_loss = checkpoint['loss']
-    start_epoch = checkpoint['epoch']
-    return model, optim, evaluation_loss, start_epoch
-
-
-# TODO Remember val_dataloader is a list of dataloaders differentiated via C1-3
-def train_attention(args, train_dataloader, val_dataloader, embeddings, logger, tensorboard_logger,
-                    model_save_path, model_name):
-    if args.checkpoint_att is None:
-        att_embed_dim = args.att_embed_dim
-        att_num_heads = args.att_num_heads
-        att_num_layers = args.att_num_layers
-        att_dim_feedforward = args.att_dim_feedforward
-
-        model = Attention(embed_dim=att_embed_dim, num_heads=att_num_heads,
-                          num_layers=att_num_layers, dim_feedforward=att_dim_feedforward).to(device)
-        optim = get_optim(model, args.lr, args.weight_decay)
-        evaluation_loss = None
-        start_epoch = 0
-    else:
-        logger.info(f"# Loading model from checkpoint {args.checkpoint_att}")
-        model, optim, evaluation_loss, start_epoch = load_model_from_check(args.checkpoint_att)
-
-    model = model.to(device)
-    logger.info('> Attention Model loading done!')
-
-    train_model(model, optim, args.num_epochs, train_dataloader, val_dataloader, embeddings,
-                logger, tensorboard_logger, model_save_path, model_name, evaluation_loss=evaluation_loss, start_epoch=start_epoch)
-
-
-def train_proj_attention(args, train_dataloader, val_dataloader, embeddings, logger, tensorboard_logger,
-                         model_save_path, model_name):
-    if args.checkpoint_proj is None:
-        proj_embed_dim = args.proj_embed_dim
-        proj_projection_dim = args.proj_projection_dim
-        proj_num_heads = args.proj_num_heads
-        proj_num_layers = args.proj_num_layers
-        proj_dim_feedforward = args.proj_dim_feedforward
-
-        model = ProjectedAttention(embed_dim=proj_embed_dim, projection_dim=proj_projection_dim,
-                                   num_heads=proj_num_heads, num_layers=proj_num_layers,
-                                   dim_feedforward=proj_dim_feedforward).to(device)
-        optim = get_optim(model, args.lr, args.weight_decay)
-        evaluation_loss = None
-        start_epoch = 0
-    else:
-        logger.info(f"# Loading model from checkpoint {args.checkpoint_proj}")
-        model, optim, evaluation_loss, start_epoch = load_model_from_check(args.checkpoint_proj)
-
-    model = model.to(device)
-    logger.info('> Projection Attention Model loading done!')
-
-    train_model(model, optim, args.num_epochs, train_dataloader, val_dataloader, embeddings,
-                logger, tensorboard_logger, model_save_path, model_name, evaluation_loss=evaluation_loss, start_epoch=start_epoch)
-
-
-def train_mlp(args, train_dataloader, val_dataloader, embeddings, logger, tensorboard_logger,
-              model_save_path, model_name):
-    if args.checkpoint_mlp is None:
-        mlp_embed_dim = args.mlp_embed_dim
-        mlp_projection_dim = args.mlp_projection_dim
-        mlp_hidden_dim = args.mlp_hidden_dim
-
-        model = MLP(embed_dim=mlp_embed_dim, projection_dim=mlp_projection_dim,
-                    hidden=mlp_hidden_dim).to(device)
-        optim = get_optim(model, args.lr, args.weight_decay)
-        evaluation_loss = None
-        start_epoch = 0
-    else:
-        logger.info(f"# Loading model from checkpoint {args.checkpoint_mlp}")
-        model, optim, evaluation_loss, start_epoch = load_model_from_check(args.checkpoint_mlp)
-
-    model = model.to(device)
-    logger.info('> MLP Model loading done!')
-
-    train_model(model, optim, args.num_epochs, train_dataloader, val_dataloader, embeddings,
-                logger, tensorboard_logger, model_save_path, model_name, evaluation_loss=evaluation_loss, start_epoch=start_epoch)
-
-
-def train_linear(args, train_dataloader, val_dataloader, embeddings, logger, tensorboard_logger,
-                 model_save_path, model_name):
-    if args.checkpoint_linear is None:
-        linear_embed_dim = args.linear_embed_dim
-        model = Linear(embed_dim=linear_embed_dim).to(device)
-        optim = get_optim(model, args.lr, args.weight_decay)
-        evaluation_loss = None
-        start_epoch = 0
-    else:
-        logger.info(f"# Loading model from checkpoint {args.checkpoint_linear}")
-        model, optim, evaluation_loss, start_epoch = load_model_from_check(args.checkpoint_linear)
-
-    model = model.to(device)
-    logger.info('> Linear Model loading done!')
-
-    train_model(model, optim, args.num_epochs, train_dataloader, val_dataloader, embeddings,
-                logger, tensorboard_logger, model_save_path, model_name, evaluation_loss=evaluation_loss, start_epoch=start_epoch)
-
-
-def get_dirs_for_model(args, model_type, model_name):
-    output_creation_dir = args.output_creation_dir
-
-    tensorboard_path = args.tensorboard_path or output_creation_dir.joinpath(f'{model_type}/tensorboard/{model_name}')
-    tensorboard_path.mkdir(parents=True, exist_ok=True)
-    tensorboard_logger = SummaryWriter(log_dir=tensorboard_path)
-
-    model_save_path = args.model_save_path or output_creation_dir.joinpath(f'{model_type}/models/{model_name}')
-    model_save_path.mkdir(parents=True, exist_ok=True)
-
-    logging_path = args.logging_path or output_creation_dir.joinpath(f'{model_type}/models/{model_name}/{model_name}.log')
-    logger = getlogger(logging_path, name=model_name)
-
-    return logger, tensorboard_logger, model_save_path
-
-
-def handle_config(config, model_group_prefix):
-    return_config = {}
-    for key in ['num_epochs', 'batch_size', 'weight_decay', 'lr']:
-        return_config[key] = config[key]
-    for key, value in config.items():
-        if key.startswith(model_group_prefix) and ('model_name' not in key) and ('config' not in key):
-            return_config[key] = value
-    return return_config
-
-
-def get_config(args, config_path, model_group_prefix):
-    if not config_path:
-        config = handle_config(vars(args), model_group_prefix)
-    else:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-    return config
-
-
-def config_save(model_save_path, config):
-    with open(model_save_path.joinpath('config.json'), 'w+') as f:
-        json.dump(config, f)
-
-
-def main(args):
-    set_seed(42)
-
-    if args.attention:
-        att_config = get_config(args, args.att_config, 'att_')
-        vars(args).update(att_config)
-        att_model_name = args.att_model_name or get_hash(att_config)
-
-        logger_att, tensorboard_logger_att, model_save_path_att = get_dirs_for_model(args, 'attention', att_model_name)
-        config_save(model_save_path_att, att_config)
-
-        logger_att.info(f'Using {device}')
-        logger_att.info('# Create Dataloaders and load embeddings!')
-    if args.projattention:
-        proj_config = get_config(args, args.proj_config, 'proj_')
-        vars(args).update(proj_config)
-        proj_model_name = args.proj_model_name or get_hash(proj_config)
-
-        logger_proj_att, tensorboard_logger_proj_att, model_save_path_proj_att = \
-            get_dirs_for_model(args, 'proj_attention', proj_model_name)
-        config_save(model_save_path_proj_att, proj_config)
-
-        logger_proj_att.info(f'Using {device}')
-        logger_proj_att.info('# Create Dataloaders and load embeddings!')
-    if args.mlp:
-        mlp_config = get_config(args, args.mlp_config, 'mlp_')
-        vars(args).update(mlp_config)
-        mlp_model_name = args.mlp_model_name or get_hash(mlp_config)
-
-        logger_mlp, tensorboard_logger_mlp, model_save_path_mlp = get_dirs_for_model(args, 'mlp', mlp_model_name)
-        config_save(model_save_path_mlp, mlp_config)
-
-        logger_mlp.info(f'Using {device}')
-        logger_mlp.info('# Create Dataloaders and load embeddings!')
-    if args.linear:
-        linear_config = get_config(args, args.linear_config, 'linear_')
-        vars(args).update(linear_config)
-        linear_model_name = args.linear_model_name or get_hash(linear_config)
-
-        logger_linear, tensorboard_logger_linear, model_save_path_linear = \
-            get_dirs_for_model(args, 'linear', linear_model_name)
-        config_save(model_save_path_linear, linear_config)
-
-        logger_linear.info(f'Using {device}')
-        logger_linear.info('# Create Dataloaders and load embeddings!')
-
-    batch_size = args.batch_size
-    train_fi = args.train
-    val_fi = args.val
-    augment = args.augment
-    embedding_h5 = args.embedding
-
-    pairs_train_dataloader, pairs_val_dataloaders, embeddings = get_training_dataloader(train_fi, augment, batch_size, 'label',
-                                                                                       val_fi, batch_size, 'label', 'cclass',
-                                                                                       embedding_h5, perprot=True)
-
-    if args.attention:
-        logger_att.info('> Dataloader and embeddings done!')
-        train_attention(args, pairs_train_dataloader, pairs_val_dataloaders, embeddings,
-                        logger_att, tensorboard_logger_att, model_save_path_att, att_model_name)
-
-    if args.projattention:
-        logger_proj_att.info('> Dataloader and embeddings done!')
-        train_proj_attention(args, pairs_train_dataloader, pairs_val_dataloaders, embeddings,
-                             logger_proj_att, tensorboard_logger_proj_att, model_save_path_proj_att, proj_model_name)
-
-    if args.mlp:
-        logger_mlp.info('> Dataloader and embeddings done!')
-        train_mlp(args, pairs_train_dataloader, pairs_val_dataloaders, embeddings,
-                  logger_mlp, tensorboard_logger_mlp, model_save_path_mlp, mlp_model_name)
-
-    if args.linear:
-        logger_linear.info('> Dataloader and embeddings done!')
-        train_linear(args, pairs_train_dataloader, pairs_val_dataloaders, embeddings,
-                     logger_linear, tensorboard_logger_linear, model_save_path_linear, linear_model_name)
 
 
 if __name__ == "__main__":

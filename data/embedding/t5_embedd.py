@@ -1,21 +1,18 @@
-import sys
 from pathlib import Path
-ppi_path = Path(__file__).resolve().parent.parent.parent.parent
-sys.path.append(str(ppi_path))
-
 from time import perf_counter
 
 import h5py
 import torch
-from utils.sequence_utils import parse_fasta
 from tqdm.auto import tqdm
+
+from utils.sequence_utils import parse_fasta
 
 
 def get_model(model_type, cache_dir, device):
     if model_type == 't5':
         from transformers import T5EncoderModel, T5Tokenizer
         encoder, tokenizer, transformer_link = \
-            T5EncoderModel, T5Tokenizer, 'Rostlab/prot_t5_xl_uniref50'
+            T5EncoderModel, T5Tokenizer, 'Rostlab/prot_t5_xl_half_uniref50-enc'
     else:
         from transformers import BertModel, BertTokenizer
         encoder, tokenizer, transformer_link = \
@@ -37,7 +34,7 @@ def get_model(model_type, cache_dir, device):
 def embed_from_fasta(fasta_path, identifier_ref_output_path, output_path, cache_dir,
                      device, model_type, per_protein, half_precision, verbose=True):
     if verbose:
-        print("Loading Model ...")
+        print('Loading Model ...')
     model, vocab = get_model(model_type, cache_dir, device)
 
     get_embeddings(fasta_path, identifier_ref_output_path, output_path, model, vocab,
@@ -46,16 +43,16 @@ def embed_from_fasta(fasta_path, identifier_ref_output_path, output_path, cache_
 
 def embedding_init(fasta_path, identifier_ref_output_path, model, half_precision, max_seq_len=600, verbose=True):
     if verbose:
-        print("# Loading Sequences ...")
+        print('Loading Sequences ...')
     seq_dict = parse_fasta(fasta_path, identifier_ref_output_path)
 
     if verbose:
-        print("# Starting Embedding...")
+        print('Starting Embedding...')
 
     if half_precision:
         model = model.half()
         if verbose:
-            print("Using model in half-precision!")
+            print('Using model in half-precision!')
 
     if verbose:
         print('#' * 40)
@@ -69,8 +66,8 @@ def embedding_init(fasta_path, identifier_ref_output_path, model, half_precision
     seq_dict = sorted(seq_dict.items(), key=lambda kv: len(seq_dict[kv[0]]), reverse=True)
 
     if verbose:
-        print("Average sequence length: {}".format(avg_length))
-        print("Number of sequences >{}: {}".format(max_seq_len, n_long))
+        print('Average sequence length: {}'.format(avg_length))
+        print('Number of sequences >{}: {}'.format(max_seq_len, n_long))
         print('#' * 40)
 
     return seq_dict, model, avg_length
@@ -79,7 +76,8 @@ def embedding_init(fasta_path, identifier_ref_output_path, model, half_precision
 def process_batch(batch, model, vocab, device, per_protein, emb_dict):
     pdb_ids, seqs, seq_lens = zip(*batch)
 
-    token_encoding = vocab(seqs, add_special_tokens=True, padding='longest', return_tensors="pt")
+    token_encoding = vocab(seqs, add_special_tokens=True,
+                           padding='longest', return_tensors='pt')
     input_ids = token_encoding['input_ids'].to(device)
     attention_mask = token_encoding['attention_mask'].to(device)
 
@@ -88,7 +86,7 @@ def process_batch(batch, model, vocab, device, per_protein, emb_dict):
         with torch.no_grad():
             embedding_repr = model(input_ids, attention_mask=attention_mask)
     except RuntimeError:
-        print("RuntimeError for {} (L={})".format(pdb_ids, seq_lens))
+        print('RuntimeError for {} (L={})'.format(pdb_ids, seq_lens))
         return emb_dict
 
     new_emb_dict = dict()
@@ -100,7 +98,7 @@ def process_batch(batch, model, vocab, device, per_protein, emb_dict):
             emb = emb.mean(dim=0)
 
             # if len(emb_dict) == 0:
-            #    print("Embedded protein {} with length {} to emb. of shape: {}".format(
+            #    print('Embedded protein {} with length {} to emb. of shape: {}'.format(
             #        identifier, s_len, emb.shape))
         new_emb_dict[identifier] = emb.detach().cpu().numpy().squeeze()
 
@@ -166,7 +164,7 @@ def get_embeddings(fasta_path, identifier_ref_output_path, output_path, model, v
         emb_count += len(emb_dict)
         save_embeddings(output_path, emb_dict)
     emb_end = perf_counter()
-    print("Embeddings stored to: {}".format(output_path))
+    print('Embeddings stored to: {}'.format(output_path))
 
     print('\n############# STATS #############')
     print('Total number of embeddings: {}'.format(emb_count))

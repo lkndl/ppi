@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from torch.utils.data import Dataset
 
 
 class Linear(nn.Module):
@@ -63,7 +62,14 @@ class MLP(nn.Module):
 
 
 class ProjectedAttention(nn.Module):
-    def __init__(self, embed_dim, projection_dim, num_heads=8, num_layers=2, dim_feedforward=128, out_dim=1, activation=nn.GELU()):
+    def __init__(self,
+                 embed_dim,
+                 projection_dim,
+                 num_heads=8,
+                 num_layers=2,
+                 dim_feedforward=128,
+                 out_dim=1,
+                 activation=nn.GELU()):
         super(ProjectedAttention, self).__init__()
 
         # (batch, 1, emb_dim) ---> (batch, 1, proj)
@@ -127,31 +133,6 @@ class Attention(nn.Module):
         return sum([p.numel() for p in self.parameters() if p.requires_grad])
 
 
-class PairedDataset(Dataset):
-    def __init__(self, X0, X1, Y):
-        self.X0 = X0
-        self.X1 = X1
-        self.Y = Y
-        assert len(X0) == len(X1), "X0: " + str(len(X0)) + " X1: " + str(len(X1)) + " Y: " + str(len(Y))
-        assert len(X0) == len(Y), "X0: " + str(len(X0)) + " X1: " + str(len(X1)) + " Y: " + str(len(Y))
-
-    def __len__(self):
-        return len(self.X0)
-
-    def __getitem__(self, i):
-        return self.X0[i], self.X1[i], self.Y[i]
-
-
-def collate_paired_sequences(args):
-    """
-    Collate function for PyTorch data loader.
-    """
-    x0 = [a[0] for a in args]
-    x1 = [a[1] for a in args]
-    y = [a[2] for a in args]
-    return x0, x1, torch.stack(y, 0)
-
-
 if __name__ == '__main__':
     att = Attention(1024, num_heads=8, num_layers=2, dim_feedforward=100)
     print(att.get_num_parameters())
@@ -173,9 +154,8 @@ if __name__ == '__main__':
     kernel_width = 7
     contact = ContactCNN(projection_dim, hidden_dim, kernel_width)
     # Create the full model
-    use_W = True
+    use_w = True
     pool_width = 9
-    model = ModelInteraction(embedding, contact, use_W=use_W, pool_size=pool_width)
+    model = ModelInteraction(embedding, contact, use_w=use_w, pool_size=pool_width)
 
     print(sum([p.numel() for p in model.parameters() if p.requires_grad]))
-

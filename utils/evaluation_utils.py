@@ -1,16 +1,10 @@
-from numpy.random import randint
-from sklearn.metrics import (
-    confusion_matrix, accuracy_score, precision_recall_fscore_support,
-    average_precision_score as auc_pr, roc_auc_score as auc_roc,
-    precision_recall_curve, roc_curve
-)
-import torch
-from torch.nn.functional import binary_cross_entropy
 from statistics import mean, stdev
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
+import torch
+from numpy.random import randint
+from sklearn import metrics as skl
+from torch.nn.functional import binary_cross_entropy
 
 
 def bootstrap_statistic(predictions, interaction_labels):
@@ -45,13 +39,13 @@ def statistics(predictions, interaction_labels):
         predictions_boundary = .5
         encountered_pairs = len(predictions)
         binary_predictions = (predictions_boundary * torch.ones(encountered_pairs) < predictions).float()
-        tn, fp, fn, tp = confusion_matrix(interaction_labels, binary_predictions, labels=[0, 1]).ravel()
+        tn, fp, fn, tp = skl.confusion_matrix(interaction_labels, binary_predictions, labels=[0, 1]).ravel()
 
-        acc = accuracy_score(interaction_labels, binary_predictions)
-        precision, recall, f1, _ = precision_recall_fscore_support(interaction_labels, binary_predictions,
-                                                                   average='binary', zero_division=0)
+        acc = skl.accuracy_score(interaction_labels, binary_predictions)
+        precision, recall, f1, _ = skl.precision_recall_fscore_support(interaction_labels, binary_predictions,
+                                                                       average='binary', zero_division=0)
 
-        aucpr = auc_pr(interaction_labels, predictions)
+        aucpr = skl.auc_pr(interaction_labels, predictions)
         # aucroc = auc_roc(interaction_labels, predictions)
 
     return {'loss': loss / encountered_pairs, 'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn, 'acc': acc,
@@ -63,7 +57,7 @@ def plot_all_statistics(predictions, interaction_labels, path):
     fpr, tpr, aucroc = plot_roc(predictions, interaction_labels, path)
     plot_label_dist(predictions, interaction_labels, path)
 
-    #with open(f'{path}output.txt', 'w+') as f:
+    # with open(f'{path}output.txt', 'w+') as f:
     #    output_format = 'Precision={:<8.6}, Recall={:<8.6}, AUPR={:<8.6}, AUROC={:8.6}'
     #    f.write(output_format.format(*[precision, recall, aucpr, aucroc]))
 
@@ -101,8 +95,8 @@ def plot_label_dist(predictions, interaction_labels, path):
 
 
 def plot_pr(predictions, interaction_labels, path):
-    precision, recall, _ = precision_recall_curve(interaction_labels, predictions)
-    aucpr = auc_pr(interaction_labels, predictions)
+    precision, recall, _ = skl.precision_recall_curve(interaction_labels, predictions)
+    aucpr = skl.auc_pr(interaction_labels, predictions)
 
     plt.step(recall, precision, color="b", alpha=0.2, where="post")
     plt.fill_between(recall, precision, step="post", alpha=0.2, color="b")
@@ -118,8 +112,8 @@ def plot_pr(predictions, interaction_labels, path):
 
 
 def plot_roc(predictions, interaction_labels, path):
-    fpr, tpr, _ = roc_curve(interaction_labels, predictions)
-    aucroc = auc_roc(interaction_labels, predictions)
+    fpr, tpr, _ = skl.roc_curve(interaction_labels, predictions)
+    aucroc = skl.auc_roc(interaction_labels, predictions)
 
     plt.step(fpr, tpr, color="b", alpha=0.2, where="post")
     plt.fill_between(fpr, tpr, step="post", alpha=0.2, color="b")
