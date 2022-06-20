@@ -90,7 +90,7 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
         bin_predictions = ((.5 * torch.ones(num_pairs)) < predictions).float()
 
         eval_acc = skl.accuracy_score(labels, bin_predictions)
-        eval_pr = skl.precision_score(labels, bin_predictions)
+        eval_pr = skl.precision_score(labels, bin_predictions, zero_division=0)
         eval_re = skl.recall_score(labels, bin_predictions)
         eval_f1 = skl.f1_score(labels, bin_predictions)
         eval_aupr = skl.average_precision_score(labels, predictions)

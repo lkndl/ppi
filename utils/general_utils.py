@@ -45,6 +45,17 @@ def save_config(config: dict, model_save_path: Path):
         json.dump(config, f)
 
 
+def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch,
+                     model, optimizer, loss, eval_number=None, save_epoch=False):
+    digits = int(np.floor(np.log10(num_max_epoch))) + 1
+    save_path = model_save_path / 'checkpoint'
+    save_path.mkdir(parents=True, exist_ok=True)
+    save_model(save_path, model_name,
+               f'epoch{str(epoch + 1).zfill(digits)}'
+               f'{"_checkpoint" if not save_epoch else ""}',
+               model, optimizer, loss, epoch, eval_number)
+
+
 def save_model(model_save_path, model_name, model_text,
                model, optimizer, loss, epoch, eval_number=None):
     model.cpu()
@@ -78,7 +89,7 @@ def log_stats(eval_loss, labels, eval_counter,
     metrics = list()
     metrics.append(('loss', eval_loss))
     metrics.append(('ACC', skl.accuracy_score(labels, bin_predictions)))
-    metrics.append(('Pr', skl.precision_score(labels, bin_predictions)))
+    metrics.append(('Pr', skl.precision_score(labels, bin_predictions, zero_division=0)))
     metrics.append(('Re', skl.recall_score(labels, bin_predictions)))
     metrics.append(('F1', skl.f1_score(labels, bin_predictions)))
     metrics.append(('AUPR', skl.average_precision_score(labels, predictions)))
@@ -91,10 +102,10 @@ def log_stats(eval_loss, labels, eval_counter,
 
 def getlogger(logging_path, name=''):
     logging_path.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger(name or __name__)
+    logger.setLevel(logging.DEBUG)
 
     fh = logging.FileHandler(logging_path)
-
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter('%(asctime)s: %(levelname)s\t%(name)s\t%(message)s',
                                       datefmt='%H:%M:%S'))

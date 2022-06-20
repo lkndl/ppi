@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
 from interaction import InteractionMap, InteractionMapDscript
-from train_t5 import add_args, step_model, checkpoint_model, handle_config
+from train_t5 import add_args, step_model, handle_config
 from utils import general_utils as utils
 from utils.dataloader import get_dataloaders_and_ids, get_embeddings
 
@@ -20,24 +20,29 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def eval_model(model: InteractionMap,
-               eval_counter: int, pairs_val_dataloaders,
+               eval_counter: int,
+               validation_dataloaders: list[DataLoader],
                embeddings: dict[str, torch.Tensor],
-               interaction_weight, logger, tensorboard_loggers):
+               interaction_weight: float,
+               logger: Logger,
+               tensorboard_loggers: list[SummaryWriter]
+               ) -> tuple[float, int]:
     logger.info(f' Evaluation {eval_counter} '.center(40, '+'))
     model.eval()
     with torch.no_grad():
         for cclass, (val_loader, tb_logger) in enumerate(
-                zip(pairs_val_dataloaders, tensorboard_loggers), 1):
+                zip(validation_dataloaders, tensorboard_loggers), 1):
             predictions, labels = [], []
             eval_loss, num_seqs = 0, 0
             for n0, n1, y in tqdm(val_loader, total=len(val_loader),
                                   desc=f'Evaluation {eval_counter}',
                                   position=0, leave=True, ascii=True):
                 loss, batch_size, prediction = step_model(
-                    model, n0, n1, y, embeddings, weight=interaction_weight, evaluate=True)
+                    model, n0, n1, y, embeddings,
+                    weight=interaction_weight, evaluate=True)
                 predictions.append(prediction.detach().cpu())
                 labels.append(y.float().detach().cpu())
-                eval_loss += loss.item()   # TODO oder evtl loss.detach().cpu()
+                eval_loss += loss.item()
                 num_seqs += batch_size
 
             labels = torch.cat(labels, 0)
@@ -59,11 +64,11 @@ def train_model(model: InteractionMap,
                 embeddings: dict[str, torch.Tensor],
                 interaction_weight: float,
                 logger: Logger,
-                tb_loggers: list[Logger],
+                tb_loggers: list[SummaryWriter],
                 model_save_path: Path,
                 model_name: str,
                 use_dscript: bool = False,
-                evaluation_loss=None,
+                evaluation_loss: float = None,
                 start_epoch: int = 0,
                 eval_counter: int = 0) -> None:
     # bisher nutzen wir vier Logger, damit die Farben im tensorboard konsistent bleiben
@@ -71,8 +76,9 @@ def train_model(model: InteractionMap,
 
     def evaluate(old_loss, eval_counter, decline):
         return_loss, return_decline = old_loss, decline  # decline: wie oft wurde es nicht besser eh klar
-        new_eval_loss, num_eval_seqs_now = eval_model(model, eval_counter, validation_dataloaders, embeddings,
-                                                      interaction_weight, logger, tb_val_loggers)
+        new_eval_loss, num_eval_seqs_now = eval_model(
+            model, eval_counter, validation_dataloaders, embeddings,
+            interaction_weight, logger, tb_val_loggers)
         if new_eval_loss <= old_loss:
             return_decline = 0
             return_loss = new_eval_loss
@@ -85,7 +91,7 @@ def train_model(model: InteractionMap,
         return return_loss, eval_counter + 1, num_eval_seqs_now, return_decline
 
     iterations_counter = -1  # wir evaluieren schon mehrfach pro epoche, nach x batches
-    eval_loss, patience, decline = evaluation_loss or float('inf'), 20, 0
+    eval_loss, patience, decline = evaluation_loss or float('inf'), 1000, 0
     value_rounder = lambda x, pow: round(x / 10 ** pow) * 10 ** pow
 
     num_train_seqs, num_eval_seqs = 0, 0
@@ -125,16 +131,17 @@ def train_model(model: InteractionMap,
                         considered_loss = epoch_loss / num_seqs
                     else:
                         considered_loss = float('inf')
-                    checkpoint_model(model_save_path, model_name, epoch,
-                                     num_epochs, model, optim, considered_loss,
-                                     eval_counter, save_epoch=False)  # savegame
+                    utils.checkpoint_model(model_save_path, model_name, epoch,
+                                           num_epochs, model, optim, considered_loss,
+                                           eval_counter, save_epoch=False)  # savegame
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
                     utils.wipe_memory()
 
                 loss, b, _ = step_model(model, z0, z1, y, embeddings,
                                         weight=interaction_weight, evaluate=False)
                 num_seqs += b
-                epoch_loss += loss.item()
+                batch_loss = loss.item()
+                epoch_loss += batch_loss
 
                 loss.backward()
                 optim.step()
@@ -144,14 +151,14 @@ def train_model(model: InteractionMap,
                     model.clip()  # wie numpy aber parameter custom anpassen. funktion ist von denen selber implementiert
 
                 tb_train_logger.add_scalar(
-                    "Loss Batch Train", loss.item() / b, batch_idx)
+                    "Loss Batch Train", batch_loss / b, batch_idx)
                 utils.flush_loggers(tb_loggers)
                 utils.wipe_memory()
 
             tb_train_logger.add_scalar("Loss Epoch Train", epoch_loss / num_seqs, epoch + 1)
-            checkpoint_model(model_save_path, model_name, epoch,
-                             num_epochs, model, optim, epoch_loss / num_seqs,
-                             eval_counter, save_epoch=True)
+            utils.checkpoint_model(model_save_path, model_name, epoch,
+                                   num_epochs, model, optim, epoch_loss / num_seqs,
+                                   eval_counter, save_epoch=True)
             logger.info(f"# Epoch Checkpoint model to {model_save_path}/checkpoint/")
             num_train_seqs = num_seqs
 

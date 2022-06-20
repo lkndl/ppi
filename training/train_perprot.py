@@ -1,17 +1,25 @@
 import argparse
 import json
+import sys
+from logging import Logger
 from pathlib import Path
 from time import perf_counter
+from typing import Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.optim import Adam
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from training.perprot.network import Attention, ProjectedAttention, MLP, Linear
+ppi_path = str(Path(__file__).resolve().parents[1])
+if ppi_path not in sys.path:
+    sys.path.append(ppi_path)
+    print(ppi_path)
+
+from network import Attention, ProjectedAttention, MLP, Linear
 from utils import general_utils as utils
 from utils.dataloader import get_dataloaders_and_ids, get_embeddings
 
@@ -43,7 +51,7 @@ def add_args(parser):
     misc_grp.add_argument("--checkpoint_proj", help="Checkpoint model to start training from")
     misc_grp.add_argument("--checkpoint_mlp", help="Checkpoint model to start training from")
     misc_grp.add_argument("--checkpoint_linear", help="Checkpoint model to start training from")
-    misc_grp.add_argument('--output_creation_dir', type=Path, required=False, default='.')
+    misc_grp.add_argument('--output_creation_dir', type=Path, required=False, default=Path('perprot'))
     misc_grp.add_argument('--logging_path', type=Path, required=False)
     misc_grp.add_argument('--tensorboard_path', type=Path, required=False)
     misc_grp.add_argument('--model_save_path', type=Path, required=False)
@@ -86,7 +94,9 @@ def add_args(parser):
 
 
 def step_model(model, n0, n1, y, embeddings, evaluate=False):
-    emb0, emb1 = get_emb(n0, embeddings).to(device), get_emb(n1, embeddings).to(device)
+    get_emb = lambda ids: torch.cat([embeddings[_id] for _id in ids], dim=0)
+
+    emb0, emb1 = get_emb(n0).to(device), get_emb(n1).to(device)
     predictions = nn.Sigmoid()(model(emb0, emb1))
     y = Variable(y).float().unsqueeze(-1).to(device)
 
@@ -98,13 +108,14 @@ def step_model(model, n0, n1, y, embeddings, evaluate=False):
     return loss, batch_size
 
 
-def eval_model(model, eval_counter, pairs_val_dataloader, embeddings, logger, tensorboard_logger):
+def eval_model_no_cval(model, eval_counter, pairs_val_dataloader, embeddings, logger, tensorboard_logger):
     logger.info(f' Evaluation {eval_counter} '.center(40, '+'))
     model.eval()
     with torch.no_grad():
         predictions, labels = [], []
         eval_loss, num_seqs = 0, 0
-        for n0, n1, y in tqdm(pairs_val_dataloader, total=len(pairs_val_dataloader), desc=f'Evaluation {eval_counter}',
+        for n0, n1, y in tqdm(pairs_val_dataloader, total=len(pairs_val_dataloader),
+                              desc=f'Evaluation {eval_counter}',
                               position=0, leave=True, ascii=True):
             loss, batch_size, prediction, label = step_model(model, n0, n1, y, embeddings, evaluate=True)
             predictions.append(prediction)
@@ -123,16 +134,16 @@ def eval_model(model, eval_counter, pairs_val_dataloader, embeddings, logger, te
     return eval_loss, num_seqs
 
 
-def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloader,
-                embeddings, logger, tensorboard_logger, model_save_path, model_name,
-                evaluation_loss=None, start_epoch=0):
+def train_model_no_cval(model, optim, num_epochs, pairs_train_dataloader, pairs_val_dataloader,
+                        embeddings, logger, tensorboard_logger, model_save_path, model_name,
+                        evaluation_loss=None, start_epoch=0):
     logger.info(' Train new model '.center(50, '#'))
     logger.info(f'{model}')
 
     def evaluate(old_loss, eval_counter, decline):
         return_loss, return_decline = old_loss, decline
-        new_eval_loss, num_eval_seqs_now = eval_model(model, eval_counter, pairs_val_dataloader, embeddings,
-                                                      logger, tensorboard_logger)
+        new_eval_loss, num_eval_seqs_now = eval_model(
+            model, eval_counter, pairs_val_dataloader, embeddings, logger, tensorboard_logger)
         if new_eval_loss <= old_loss:
             return_decline = 0
             return_loss = new_eval_loss
@@ -179,8 +190,8 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
                         considered_loss = epoch_loss / num_seqs
                     else:
                         considered_loss = float('inf')
-                    checkpoint_model(model_save_path, model_name, epoch, num_epochs, model, optim, considered_loss,
-                                     save_epoch=False)
+                    utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                           model, optim, considered_loss, save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
                 loss, b = step_model(model, z0, z1, y, embeddings, evaluate=False)
@@ -194,8 +205,8 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
                 tensorboard_logger.add_scalar("Loss Batch Train", loss / b, batch_idx)
 
             tensorboard_logger.add_scalar("Loss Epoch Train", epoch_loss / num_seqs, epoch + 1)
-            checkpoint_model(model_save_path, model_name, epoch, num_epochs, model, optim, epoch_loss / num_seqs,
-                             save_epoch=True)
+            utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                   model, optim, epoch_loss / num_seqs, save_epoch=True)
             logger.info(f"# Epoch Checkpoint model to {model_save_path}/checkpoint/")
             num_train_seqs = num_seqs
 
@@ -223,20 +234,6 @@ def train_model(model, optim, num_epochs, pairs_train_dataloader, pairs_val_data
     logger.info(f'Train Time per Epoch in s per Pair: {train_total_timer / num_epochs / num_train_seqs}')
     logger.info(f'Evaluation Time per Evaluation in s per Pair: {eval_total_timer / eval_counter / num_eval_seqs}')
     utils.save_final(model_save_path, model_name)
-
-
-def get_emb(keys_list, emb_dict):
-    return torch.cat([emb_dict[key] for key in keys_list], dim=0)
-
-
-def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch, model, optimizer, loss, save_epoch=False):
-    digits = int(np.floor(np.log10(num_max_epoch))) + 1
-    save_path = model_save_path / 'checkpoint'
-    save_path.mkdir(parents=True, exist_ok=True)
-    utils.save_model(save_path, model_name,
-                     f'epoch{str(epoch + 1).zfill(digits)}'
-                     f'{"_checkpoint" if not save_epoch else ""}',
-                     model, optimizer, loss, epoch)
 
 
 def get_optim(model, lr, weight_decay):
@@ -351,23 +348,6 @@ def train_linear(args, train_dataloader, val_dataloader, embeddings, logger, ten
                 evaluation_loss=evaluation_loss, start_epoch=start_epoch)
 
 
-def get_dirs_for_model(args, model_type, model_name):
-    """TODO replace+remove"""
-    out_dir = args.output_creation_dir
-
-    tb_path = args.tensorboard_path or out_dir / model_type / 'tensorboard' / model_name
-    tb_path.mkdir(parents=True, exist_ok=True)
-    tensorboard_logger = SummaryWriter(log_dir=tb_path)
-
-    m_path = args.model_save_path or out_dir / model_type / 'models' / model_name
-    m_path.mkdir(parents=True, exist_ok=True)
-
-    l_path = args.logging_path or out_dir / model_type / 'models' / model_name / f'{model_name}.log'
-    logger = utils.getlogger(l_path, name=model_name)
-
-    return logger, tensorboard_logger, m_path
-
-
 def handle_config(config, model_group_prefix):
     return_config = {}
     for key in ['num_epochs', 'batch_size', 'weight_decay', 'lr']:
@@ -378,59 +358,204 @@ def handle_config(config, model_group_prefix):
     return return_config
 
 
-def get_config(args, config_path, model_group_prefix):
-    if not config_path:
-        config = handle_config(vars(args), model_group_prefix)
-    else:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-    return config
+def eval_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
+               eval_counter: int,
+               validation_dataloaders: list[DataLoader],
+               embeddings: dict[str, torch.Tensor],
+               logger: Logger,
+               tb_logger: SummaryWriter
+               ) -> tuple[float, int]:
+    logger.info(f' Evaluation {eval_counter} '.center(40, '+'))
+    model.eval()
+    with torch.no_grad():
+        for cclass, val_loader in enumerate(validation_dataloaders, 1):
+            predictions, labels = [], []
+            eval_loss, num_seqs = 0, 0
+            for n0, n1, y in tqdm(val_loader, total=len(val_loader),
+                                  desc=f'Evaluation {eval_counter}',
+                                  position=0, leave=True, ascii=True):
+                loss, batch_size, prediction, label = step_model(
+                    model, n0, n1, y, embeddings, evaluate=True)
+                predictions.append(prediction.detach().cpu())
+                labels.append(y.float().detach().cpu())
+                eval_loss += loss.item()
+                num_seqs += batch_size
+
+            labels = torch.cat(labels, 0).view(-1)
+            predictions = torch.cat(predictions, 0).view(-1)
+
+            bin_predictions = ((.5 * torch.ones(num_seqs)) < predictions).float()
+            utils.log_stats(eval_loss, labels, eval_counter,
+                            bin_predictions, predictions,
+                            tb_logger, logger, sfx=f'/C{cclass}', lower=True)
+
+    return eval_loss, num_seqs
 
 
-def first_line(logger, device):
-    logger.info(f'Using {device}')
-    logger.info('Create Dataloaders and load embeddings ...')
+def train_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
+                optim: Adam,
+                num_epochs: int,
+                dataloader: DataLoader,
+                validation_dataloaders: list[DataLoader],
+                embeddings: dict[str, torch.Tensor],
+                logger: Logger,
+                tb_logger: SummaryWriter,
+                model_save_path: Path,
+                model_name: str,
+                evaluation_loss: float = None,
+                start_epoch: int = 0) -> None:
+    logger.info(' Train new model '.center(50, '#'))
+    logger.info(f'{model}')
+
+    layout = {
+        'Validation': {
+            'Loss': ['Multiline', ['loss/C1', 'loss/C2', 'loss/C3']],
+            'Accuracy': ['Multiline', ['acc/C1', 'acc/C2', 'acc/C3']],
+            'Precision': ['Multiline', ['pr/C1', 'pr/C2', 'pr/C3']],
+            'Recall': ['Multiline', ['re/C1', 're/C2', 're/C3']],
+            'F1': ['Multiline', ['f1/C1', 'f1/C2', 'f1/C3']],
+            'AUPR': ['Multiline', ['aupr/C1', 'aupr/C2', 'aupr/C3']],
+            'MCC': ['Multiline', ['mcc/C1', 'mcc/C2', 'mcc/C3']],
+        },
+    }
+
+    tb_logger.add_custom_scalars(layout)
+
+    def evaluate(old_loss, eval_counter, decline):
+        return_loss, return_decline = old_loss, decline
+        new_eval_loss, num_eval_seqs_now = eval_model(
+            model, eval_counter, validation_dataloaders, embeddings,
+            logger, tb_logger)
+        if new_eval_loss <= old_loss:
+            return_decline = 0
+            return_loss = new_eval_loss
+            utils.save_model(model_save_path, model_name, 'best', model, optim,
+                             return_loss / num_eval_seqs_now, epoch, eval_counter)
+            logger.info(f"# Saving model to {model_save_path}")
+        else:
+            return_decline += 1
+        model.train()
+        return return_loss, eval_counter + 1, num_eval_seqs_now, return_decline
+
+    iterations_counter, eval_counter, = -1, 0
+    eval_loss, patience, decline = evaluation_loss or float('inf'), 100, 0
+    value_rounder = lambda x, pow: round(x / 10 ** pow) * 10 ** pow
+
+    num_train_seqs, num_eval_seqs = 0, 0
+    train_total_timer, eval_total_timer = 0, 0
+    total_time = perf_counter()
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            train_epoch_start = perf_counter()
+            epoch_train_time = 0
+            logger.info(f" Start Epoch {epoch} ".center(60, '#'))
+            model.train()
+            optim.zero_grad()
+            num_seqs, epoch_loss = 0, 0
+            for batch_idx, (z0, z1, y) in enumerate(
+                    tqdm(dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}",
+                         total=len(dataloader),
+                         position=0, leave=True, ascii=True),
+                    (epoch - 1) * len(dataloader)):
+                iterations_counter += 1
+                if iterations_counter % (max(int(.05 * value_rounder(len(dataloader), 3)), 1)) == 0:
+                    epoch_train_time += perf_counter() - train_epoch_start
+                    eval_time_start = perf_counter()
+                    eval_loss, eval_counter, num_eval_seqs, decline = evaluate(eval_loss, eval_counter, decline)
+                    eval_total_timer += perf_counter() - eval_time_start
+
+                    if decline >= patience:
+                        raise utils.PatienceExceededError('Termination due to patience exceedance! '.center(100, '!'))
+
+                    train_epoch_start = perf_counter()
+                if iterations_counter % (max(int(.025 * value_rounder(len(dataloader), 3)), 1)) == 0:
+                    if eval_loss == float('inf') and num_seqs != 0:
+                        considered_loss = epoch_loss / num_seqs
+                    else:
+                        considered_loss = float('inf')
+                    utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                           model, optim, considered_loss, save_epoch=False)
+                    logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
+
+                loss, b = step_model(model, z0, z1, y, embeddings, evaluate=False)
+                num_seqs += b
+                batch_loss = loss.item()
+                epoch_loss += batch_loss
+
+                loss.backward()
+                optim.step()
+                optim.zero_grad()
+
+                tb_logger.add_scalar("Loss Batch Train", batch_loss / b, batch_idx)
+
+            tb_logger.add_scalar("Loss Epoch Train", epoch_loss / num_seqs, epoch + 1)
+            utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                   model, optim, epoch_loss / num_seqs, save_epoch=True)
+            logger.info(f"# Epoch Checkpoint model to {model_save_path}/checkpoint/")
+            num_train_seqs = num_seqs
+
+            ####################### Copied from above ##################
+            epoch_train_time += perf_counter() - train_epoch_start
+            eval_time_start = perf_counter()
+            eval_loss, eval_counter, num_eval_seqs, decline = evaluate(eval_loss, eval_counter, decline)
+            eval_total_timer += perf_counter() - eval_time_start
+            train_epoch_start = perf_counter()
+            ############################################################
+
+            for name, weight in model.named_parameters():
+                tb_logger.add_histogram(name, weight, epoch + 1)
+                tb_logger.add_histogram(f'{name}.grad', weight.grad, epoch + 1)
+            epoch_train_time += perf_counter() - train_epoch_start
+            train_total_timer += epoch_train_time
+    except utils.PatienceExceededError:
+        logger.info(" Termination due to patience exceedance! ".center(100, '!'))
+    total_time = perf_counter() - total_time
+    logger.info(' Time Elapsed '.center(100, '*'))
+    logger.info(f'Time per Epoch in h: {total_time / num_epochs / 3600}')
+    logger.info(f'Train Time per Epoch in h: {train_total_timer / num_epochs / 3600}')
+    logger.info(f'Evaluation Time per Evaluation in h: {eval_total_timer / eval_counter / 3600}')
+    logger.info('-----------')
+    logger.info(f'Train Time per Epoch in s per Pair: {train_total_timer / num_epochs / num_train_seqs}')
+    logger.info(f'Evaluation Time per Evaluation in s per Pair: {eval_total_timer / eval_counter / num_eval_seqs}')
+    utils.save_final(model_save_path, model_name)
 
 
 def main(args):
     utils.set_seed(42)
 
-    if args.attention:
-        att_config = get_config(args, args.att_config, 'att_')
-        vars(args).update(att_config)
-        att_model_name = args.att_model_name or utils.get_hash(att_config)
+    out_dir = args.output_creation_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tb_dir = args.tensorboard_path or out_dir / 'tensorboard'
+    tb_dir.mkdir(parents=True, exist_ok=True)
 
-        logger_att, tensorboard_logger_att, model_save_path_att = get_dirs_for_model(
-            args, 'attention', att_model_name)
-        utils.save_config(att_config, model_save_path_att)
-        first_line(logger_att, device)
-    if args.projattention:
-        proj_config = get_config(args, args.proj_config, 'proj_')
-        vars(args).update(proj_config)
-        proj_model_name = args.proj_model_name or utils.get_hash(proj_config)
+    big_list = list()
 
-        logger_proj_att, tensorboard_logger_proj_att, model_save_path_proj_att = \
-            get_dirs_for_model(args, 'proj_attention', proj_model_name)
-        utils.save_config(proj_config, model_save_path_proj_att)
-        first_line(logger_proj_att, device)
-    if args.mlp:
-        mlp_config = get_config(args, args.mlp_config, 'mlp_')
-        vars(args).update(mlp_config)
-        mlp_model_name = args.mlp_model_name or utils.get_hash(mlp_config)
+    for (model_type, model_prefix, func) in [('attention', 'att', train_attention),
+                                             ('projattention', 'proj', train_proj_attention),
+                                             ('mlp', 'mlp', train_mlp), ('linear', 'linear', train_linear)]:
+        args_d = vars(args)
+        if hasattr(args, model_type) and args_d[model_type]:
 
-        logger_mlp, tensorboard_logger_mlp, model_save_path_mlp = get_dirs_for_model(
-            args, 'mlp', mlp_model_name)
-        utils.save_config(mlp_config, model_save_path_mlp)
-        first_line(logger_mlp, device)
-    if args.linear:
-        linear_config = get_config(args, args.linear_config, 'linear_')
-        vars(args).update(linear_config)
-        linear_model_name = args.linear_model_name or utils.get_hash(linear_config)
+            config_path = args_d[f'{model_prefix}_config']
+            if not config_path:
+                config = handle_config(args_d, f'{model_prefix}_')
+            else:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
 
-        logger_linear, tensorboard_logger_linear, model_save_path_linear = \
-            get_dirs_for_model(args, 'linear', linear_model_name)
-        utils.save_config(linear_config, model_save_path_linear)
-        first_line(logger_linear, device)
+            args_d.update(config)
+            model_name = args_d[f'{model_prefix}_model_name'] or utils.get_hash(config)
+            tb_path = tb_dir / model_name
+            tb_path.mkdir(parents=True, exist_ok=True)
+            tb_logger = SummaryWriter(log_dir=tb_path)
+            m_path = args.model_save_path or out_dir / model_prefix / 'models' / model_name
+            m_path.mkdir(parents=True, exist_ok=True)
+            l_path = args.logging_path or out_dir / model_prefix / 'models' / model_name / f'{model_name}.log'
+            logger = utils.getlogger(l_path, name=model_name)
+            utils.save_config(config, m_path)
+            logger.info(f'Using {device}')
+            logger.info('Create Dataloaders and load embeddings ...')
+            big_list.append((func, logger, tb_logger, m_path, model_name))
 
     train_loader, train_ids = get_dataloaders_and_ids(
         args.train_file, args.batch_size, args.augment)
@@ -438,25 +563,9 @@ def main(args):
         args.val_file, args.batch_size, False, split_column='cclass')
     embeddings = get_embeddings(args.embedding, train_ids | val_ids, per_protein=True)
 
-    if args.attention:
-        logger_att.info('Dataloader and embeddings done!')
-        train_attention(args, train_loader, val_loaders, embeddings,
-                        logger_att, tensorboard_logger_att, model_save_path_att, att_model_name)
-
-    if args.projattention:
-        logger_proj_att.info('Dataloader and embeddings done!')
-        train_proj_attention(args, train_loader, val_loaders, embeddings,
-                             logger_proj_att, tensorboard_logger_proj_att, model_save_path_proj_att, proj_model_name)
-
-    if args.mlp:
-        logger_mlp.info('Dataloader and embeddings done!')
-        train_mlp(args, train_loader, val_loaders, embeddings,
-                  logger_mlp, tensorboard_logger_mlp, model_save_path_mlp, mlp_model_name)
-
-    if args.linear:
-        logger_linear.info('Dataloader and embeddings done!')
-        train_linear(args, train_loader, val_loaders, embeddings,
-                     logger_linear, tensorboard_logger_linear, model_save_path_linear, linear_model_name)
+    for (func, logger, tb_logger, m_path, model_name) in big_list:
+        logger.info('Dataloader and embeddings done!')
+        func(args, train_loader, val_loaders, embeddings, logger, tb_logger, m_path, model_name)
 
 
 if __name__ == "__main__":

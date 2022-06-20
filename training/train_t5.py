@@ -1,20 +1,19 @@
 import argparse
 import json
+import sys
 from copy import deepcopy
+from logging import Logger
 from pathlib import Path
 from time import perf_counter
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-from logging import Logger
-import sys
 
-ppi_path = str(Path(__file__).resolve().parents[2])
+ppi_path = str(Path(__file__).resolve().parents[1])
 if ppi_path not in sys.path:
     sys.path.append(ppi_path)
     print(ppi_path)
@@ -69,7 +68,7 @@ def add_args(parser):
     # Output
     misc_grp.add_argument("--checkpoint", help="Checkpoint model to start training from")
     misc_grp.add_argument("--config", help="Load config")
-    misc_grp.add_argument('--output_creation_dir', type=Path, required=False, default='.')
+    misc_grp.add_argument('--output_creation_dir', type=Path, required=False, default=Path('perresidue'))
     misc_grp.add_argument('--model_name', type=str, required=False)
     misc_grp.add_argument('--logging_path', type=Path, required=False)
     misc_grp.add_argument('--tensorboard_path', type=Path, required=False)
@@ -153,7 +152,7 @@ def train_model(model: InteractionMap,
                 embeddings: dict[str, torch.Tensor],
                 interaction_weight: float,
                 logger: Logger,
-                tb_logger: Logger,
+                tb_logger: SummaryWriter,
                 model_save_path: Path,
                 model_name: str,
                 use_dscript: bool = False,
@@ -209,8 +208,8 @@ def train_model(model: InteractionMap,
                         considered_loss = epoch_loss / num_seqs
                     else:
                         considered_loss = float('inf')
-                    checkpoint_model(model_save_path, model_name, epoch, num_epochs, model, optim, considered_loss,
-                                     save_epoch=False)
+                    utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                           model, optim, considered_loss, save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
                 loss, b, _ = step_model(model, z0, z1, y, embeddings,
@@ -227,8 +226,8 @@ def train_model(model: InteractionMap,
                 tb_logger.add_scalar("Loss Batch Train", loss / b, batch_idx)
 
             tb_logger.add_scalar("Loss Epoch Train", epoch_loss / num_seqs, epoch + 1)
-            checkpoint_model(model_save_path, model_name, epoch, num_epochs, model, optim, epoch_loss / num_seqs,
-                             save_epoch=True)
+            utils.checkpoint_model(model_save_path, model_name, epoch, num_epochs,
+                                   model, optim, epoch_loss / num_seqs, save_epoch=True)
             logger.info(f"# Epoch Checkpoint model to {model_save_path}/checkpoint/")
             num_train_seqs = num_seqs
 
@@ -258,17 +257,6 @@ def train_model(model: InteractionMap,
     utils.save_final(model_save_path, model_name)
 
 
-def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch,
-                     model, optimizer, loss, eval_number=None, save_epoch=False):
-    digits = int(np.floor(np.log10(num_max_epoch))) + 1
-    save_path = model_save_path / 'checkpoint'
-    save_path.mkdir(parents=True, exist_ok=True)
-    utils.save_model(save_path, model_name,
-                     f'epoch{str(epoch + 1).zfill(digits)}'
-                     f'{"_checkpoint" if not save_epoch else ""}',
-                     model, optimizer, loss, epoch, eval_number)
-
-
 def handle_config(config):
     for key in ['train', 'val', 'embedding', 'checkpoint',
                 'output_creation_dir', 'logging_path', 'tensorboard_path',
@@ -289,7 +277,7 @@ def main(args):
     vars(args).update(config)
     model_name = args.model_name or utils.get_hash(config)
 
-    out_dir = args.output_creation_dir  # this is usually not CWD!
+    out_dir = args.output_creation_dir
     tb_path = args.tensorboard_path or out_dir / 'tensorboard' / model_name
     tb_path.mkdir(parents=True, exist_ok=True)
     tensorboard_logger = SummaryWriter(log_dir=tb_path)
