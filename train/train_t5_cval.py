@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from interaction import InteractionMap, InteractionMapDscript
-from train_t5 import add_args, step_model, handle_config
+from .interaction import InteractionMap, InteractionMapDscript
+from .train_t5 import add_args, train_step, handle_config
 from utils import general_utils as utils
 from utils.dataloader import get_dataloaders_and_ids, get_embeddings
 
@@ -20,24 +20,24 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def eval_model(model: InteractionMap,
+               epoch: int,
                eval_counter: int,
-               validation_dataloaders: list[DataLoader],
+               validation_dataloaders: dict[str, DataLoader],
                embeddings: dict[str, torch.Tensor],
                interaction_weight: float,
                logger: Logger,
                tensorboard_loggers: list[SummaryWriter]
                ) -> tuple[float, int]:
-    logger.info(f' Evaluation {eval_counter} '.center(40, '+'))
     model.eval()
     with torch.no_grad():
-        for cclass, (val_loader, tb_logger) in enumerate(
-                zip(validation_dataloaders, tensorboard_loggers), 1):
+        for cclass, val_loader in validation_dataloaders.items():
+            tb_logger = tensorboard_loggers[int(cclass) - 1]
             predictions, labels = [], []
             eval_loss, num_seqs = 0, 0
             for n0, n1, y in tqdm(val_loader, total=len(val_loader),
-                                  desc=f'Evaluation {eval_counter}',
-                                  position=0, leave=True, ascii=True):
-                loss, batch_size, prediction = step_model(
+                                  desc=f'Evaluation {eval_counter} C{cclass}',
+                                  position=0, leave=False, ascii=True):
+                loss, batch_size, prediction = train_step(
                     model, n0, n1, y, embeddings,
                     weight=interaction_weight, evaluate=True)
                 predictions.append(prediction.detach().cpu())
@@ -45,13 +45,15 @@ def eval_model(model: InteractionMap,
                 eval_loss += loss.item()
                 num_seqs += batch_size
 
+            eval_loss /= num_seqs
             labels = torch.cat(labels, 0)
             predictions = torch.cat(predictions, 0)
 
             bin_predictions = ((.5 * torch.ones(num_seqs)) < predictions).float()
             utils.log_stats(eval_loss, labels, eval_counter,
                             bin_predictions, predictions,
-                            tb_logger, logger, sfx='', lower=False)
+                            tb_logger, logger, sfx='', lower=False,
+                            desc=f'Epoch {epoch} Evaluation {eval_counter} C{cclass}\t')
 
     return eval_loss, num_seqs
 
@@ -60,7 +62,7 @@ def train_model(model: InteractionMap,
                 optim: Adam,
                 num_epochs: int,
                 dataloader: DataLoader,
-                validation_dataloaders: list[DataLoader],
+                validation_dataloaders: dict[str, DataLoader],
                 embeddings: dict[str, torch.Tensor],
                 interaction_weight: float,
                 logger: Logger,
@@ -77,14 +79,14 @@ def train_model(model: InteractionMap,
     def evaluate(old_loss, eval_counter, decline):
         return_loss, return_decline = old_loss, decline  # decline: wie oft wurde es nicht besser eh klar
         new_eval_loss, num_eval_seqs_now = eval_model(
-            model, eval_counter, validation_dataloaders, embeddings,
+            model, epoch + 1, eval_counter, validation_dataloaders, embeddings,
             interaction_weight, logger, tb_val_loggers)
         if new_eval_loss <= old_loss:
             return_decline = 0
             return_loss = new_eval_loss
-            utils.save_model(model_save_path, model_name, 'best', model, optim,
-                             return_loss / num_eval_seqs_now, epoch, eval_counter)
-            logger.info(f"Saving model to {model_save_path}")
+            path = utils.save_model(model_save_path, model_name, 'best', model, optim,
+                                    return_loss / num_eval_seqs_now, epoch, eval_counter)
+            logger.info(f'saved new best model: {path}')
         else:
             return_decline += 1
         model.train()
@@ -101,13 +103,12 @@ def train_model(model: InteractionMap,
         for epoch in range(start_epoch, num_epochs):
             train_epoch_start = perf_counter()
             epoch_train_time = 0
-            logger.info(f" Start Epoch {epoch} ".center(60, '#'))
             model.train()
             optim.zero_grad()
             num_seqs, epoch_loss = 0, 0
             for batch_idx, (z0, z1, y) in enumerate(
                     tqdm(dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}",
-                         total=len(dataloader), position=0, leave=True, ascii=True),
+                         total=len(dataloader), position=0, leave=False, ascii=True),
                     epoch * len(dataloader)):
                 iterations_counter += 1
                 if iterations_counter % (max(int(.05 * value_rounder(
@@ -115,12 +116,12 @@ def train_model(model: InteractionMap,
                     # evaluation: whether we improved (we always do, anyway!!!!)
                     epoch_train_time += perf_counter() - train_epoch_start
                     eval_time_start = perf_counter()
-                    eval_loss, eval_counter, num_eval_seqs, decline = evaluate(
+                    eval_loss, eval_counter, num_eval_seqs, decline = evaluate(  # todo suffix
                         eval_loss, eval_counter, decline)
                     eval_total_timer += perf_counter() - eval_time_start
 
                     if decline >= patience:
-                        raise utils.PatienceExceededError('Termination due to patience exceedance! '.center(100, '!'))
+                        raise utils.PatienceExceededError('Terminate, patience exceeded')
 
                     train_epoch_start = perf_counter()
                     utils.wipe_memory()
@@ -131,13 +132,15 @@ def train_model(model: InteractionMap,
                         considered_loss = epoch_loss / num_seqs
                     else:
                         considered_loss = float('inf')
-                    utils.checkpoint_model(model_save_path, model_name, epoch,
-                                           num_epochs, model, optim, considered_loss,
-                                           eval_counter, save_epoch=False)  # savegame
-                    logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
+                    path = utils.checkpoint_model(
+                        model_save_path, model_name, epoch,
+                        num_epochs, model, optim, considered_loss,
+                        eval_counter, save_epoch=False)  # savegame
+                    logger.debug(f'checkpoint: {path}')
+                    # TODO why/**when** pass twice? once before eval and once after?
                     utils.wipe_memory()
 
-                loss, b, _ = step_model(model, z0, z1, y, embeddings,
+                loss, b, _ = train_step(model, z0, z1, y, embeddings,
                                         weight=interaction_weight, evaluate=False)
                 num_seqs += b
                 batch_loss = loss.item()
@@ -159,14 +162,14 @@ def train_model(model: InteractionMap,
             utils.checkpoint_model(model_save_path, model_name, epoch,
                                    num_epochs, model, optim, epoch_loss / num_seqs,
                                    eval_counter, save_epoch=True)
-            logger.info(f"# Epoch Checkpoint model to {model_save_path}/checkpoint/")
+            logger.info(f'Epoch {epoch + 1} checkpoint {model_save_path}/checkpoint/')
             num_train_seqs = num_seqs
 
             # nach der Epoche eh klar
             ####################### Copied from above ##################
             epoch_train_time += perf_counter() - train_epoch_start
             eval_time_start = perf_counter()
-            eval_loss, eval_counter, num_eval_seqs, decline = evaluate(
+            eval_loss, eval_counter, num_eval_seqs, decline = evaluate(  # todo suffix
                 eval_loss, eval_counter, decline)
             eval_total_timer += perf_counter() - eval_time_start
             train_epoch_start = perf_counter()
@@ -175,13 +178,13 @@ def train_model(model: InteractionMap,
             for name, weight in model.named_parameters():
                 # parameterverlauf anschauen
                 tb_train_logger.add_histogram(name, weight, epoch + 1)
-                tb_train_logger.add_histogram(f'{name}.grad', weight.grad, epoch + 1)
+                # tb_train_logger.add_histogram(f'{name}.grad', weight.grad, epoch + 1)
             epoch_train_time += perf_counter() - train_epoch_start
             train_total_timer += epoch_train_time
             utils.flush_loggers(tb_loggers)
             utils.wipe_memory()
     except utils.PatienceExceededError:
-        logger.info(" Termination due to patience exceedance! ".center(100, '!'))
+        logger.info('Terminate, patience exceeded')
         utils.flush_loggers(tb_loggers)
     total_time = perf_counter() - total_time
     logger.info(' Time Elapsed '.center(100, '*'))
@@ -194,7 +197,10 @@ def train_model(model: InteractionMap,
     utils.save_final(model_save_path, model_name)
 
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_args(parser)
+    args = parser.parse_args()
     utils.set_seed(42)
 
     if not args.config:
@@ -257,7 +263,7 @@ def main(args):
         optim = checkpoint['optimizer']
         evaluation_loss = checkpoint['loss']
         start_epoch = checkpoint['epoch']
-        eval_number = checkpoint['eval_number']
+        eval_number = checkpoint.get('eval_number', 0)
 
     model = model.to(device)
     utils.wipe_memory()
@@ -276,7 +282,5 @@ def main(args):
     utils.close_loggers(tb_loggers)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_args(parser)
-    main(parser.parse_args())
+if __name__ == '__main__':
+    main()

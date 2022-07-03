@@ -1,6 +1,5 @@
 import argparse
 import json
-import sys
 from logging import Logger
 from pathlib import Path
 from time import perf_counter
@@ -13,11 +12,6 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-
-ppi_path = str(Path(__file__).resolve().parents[1])
-if ppi_path not in sys.path:
-    sys.path.append(ppi_path)
-    print(ppi_path)
 
 from network import Attention, ProjectedAttention, MLP, Linear
 from utils import general_utils as utils
@@ -93,7 +87,7 @@ def add_args(parser):
     return parser
 
 
-def step_model(model, n0, n1, y, embeddings, evaluate=False):
+def train_step(model, n0, n1, y, embeddings, evaluate=False):
     get_emb = lambda ids: torch.cat([embeddings[_id] for _id in ids], dim=0)
 
     emb0, emb1 = get_emb(n0).to(device), get_emb(n1).to(device)
@@ -116,8 +110,8 @@ def eval_model_no_cval(model, eval_counter, pairs_val_dataloader, embeddings, lo
         eval_loss, num_seqs = 0, 0
         for n0, n1, y in tqdm(pairs_val_dataloader, total=len(pairs_val_dataloader),
                               desc=f'Evaluation {eval_counter}',
-                              position=0, leave=True, ascii=True):
-            loss, batch_size, prediction, label = step_model(model, n0, n1, y, embeddings, evaluate=True)
+                              position=0, leave=False, ascii=True):
+            loss, batch_size, prediction, label = train_step(model, n0, n1, y, embeddings, evaluate=True)
             predictions.append(prediction)
             labels.append(label)
             eval_loss += loss
@@ -172,7 +166,7 @@ def train_model_no_cval(model, optim, num_epochs, pairs_train_dataloader, pairs_
             for batch_idx, (z0, z1, y) in enumerate(
                     tqdm(pairs_train_dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}",
                          total=len(pairs_train_dataloader),
-                         position=0, leave=True, ascii=True),
+                         position=0, leave=False, ascii=True),
                     (epoch - 1) * len(pairs_train_dataloader)):
                 iterations_counter += 1
                 if iterations_counter % (max(int(.05 * value_rounder(len(pairs_train_dataloader), 3)), 1)) == 0:
@@ -194,7 +188,7 @@ def train_model_no_cval(model, optim, num_epochs, pairs_train_dataloader, pairs_
                                            model, optim, considered_loss, save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
-                loss, b = step_model(model, z0, z1, y, embeddings, evaluate=False)
+                loss, b = train_step(model, z0, z1, y, embeddings, evaluate=False)
                 num_seqs += b
                 epoch_loss += loss
 
@@ -360,7 +354,7 @@ def handle_config(config, model_group_prefix):
 
 def eval_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
                eval_counter: int,
-               validation_dataloaders: list[DataLoader],
+               validation_dataloaders: dict[str, DataLoader],
                embeddings: dict[str, torch.Tensor],
                logger: Logger,
                tb_logger: SummaryWriter
@@ -368,13 +362,13 @@ def eval_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
     logger.info(f' Evaluation {eval_counter} '.center(40, '+'))
     model.eval()
     with torch.no_grad():
-        for cclass, val_loader in enumerate(validation_dataloaders, 1):
+        for cclass, val_loader in validation_dataloaders.items():
             predictions, labels = [], []
             eval_loss, num_seqs = 0, 0
             for n0, n1, y in tqdm(val_loader, total=len(val_loader),
-                                  desc=f'Evaluation {eval_counter}',
-                                  position=0, leave=True, ascii=True):
-                loss, batch_size, prediction, label = step_model(
+                                  desc=f'Evaluation {eval_counter} C{cclass}',
+                                  position=0, leave=False, ascii=True):
+                loss, batch_size, prediction, label = train_step(
                     model, n0, n1, y, embeddings, evaluate=True)
                 predictions.append(prediction.detach().cpu())
                 labels.append(y.float().detach().cpu())
@@ -396,7 +390,7 @@ def train_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
                 optim: Adam,
                 num_epochs: int,
                 dataloader: DataLoader,
-                validation_dataloaders: list[DataLoader],
+                validation_dataloaders: dict[str, DataLoader],
                 embeddings: dict[str, torch.Tensor],
                 logger: Logger,
                 tb_logger: SummaryWriter,
@@ -455,7 +449,7 @@ def train_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
             for batch_idx, (z0, z1, y) in enumerate(
                     tqdm(dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}",
                          total=len(dataloader),
-                         position=0, leave=True, ascii=True),
+                         position=0, leave=False, ascii=True),
                     (epoch - 1) * len(dataloader)):
                 iterations_counter += 1
                 if iterations_counter % (max(int(.05 * value_rounder(len(dataloader), 3)), 1)) == 0:
@@ -477,7 +471,7 @@ def train_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
                                            model, optim, considered_loss, save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
-                loss, b = step_model(model, z0, z1, y, embeddings, evaluate=False)
+                loss, b = train_step(model, z0, z1, y, embeddings, evaluate=False)
                 num_seqs += b
                 batch_loss = loss.item()
                 epoch_loss += batch_loss
@@ -520,7 +514,10 @@ def train_model(model: Union[Attention, ProjectedAttention, MLP, Linear],
     utils.save_final(model_save_path, model_name)
 
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_args(parser)
+    args = parser.parse_args()
     utils.set_seed(42)
 
     out_dir = args.output_creation_dir
@@ -568,7 +565,6 @@ def main(args):
         func(args, train_loader, val_loaders, embeddings, logger, tb_logger, m_path, model_name)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_args(parser)
-    main(parser.parse_args())
+if __name__ == '__main__':
+    main()
+

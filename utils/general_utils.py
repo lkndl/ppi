@@ -1,16 +1,17 @@
 import gc
+import hashlib
+import json
+import logging
 import subprocess as sp
+import sys
+from pathlib import Path
+from typing import Iterable, Union
 
 import numpy as np
 import torch
-from pathlib import Path
-from typing import Iterable, Union
-import logging
-import sys
-import json
-import hashlib
-
 from sklearn import metrics as skl
+from torch import nn as nn
+from torch.optim import Adam
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -45,59 +46,75 @@ def save_config(config: dict, model_save_path: Path):
         json.dump(config, f)
 
 
+def checkpoint(model: nn.Module, optim: Adam, path: Path, **kwargs) -> None:
+    model.cpu()
+    chk = dict(model_state_dict=model.state_dict(),
+               optim_state_dict=optim.state_dict())
+    chk.update(kwargs)
+    torch.save(chk, path)
+    model.to(device)
+
+
+def publish(checkpoint: Path, cls: nn.Module, path: Path) -> None:
+    model = cls()
+    model.load_state_dict(torch.load(checkpoint)['model_state_dict'])
+    torch.save(model, path)
+
+
 def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch,
-                     model, optimizer, loss, eval_number=None, save_epoch=False):
+                     model, optimizer, loss, eval_number=None, save_epoch=False) -> Path:
     digits = int(np.floor(np.log10(num_max_epoch))) + 1
     save_path = model_save_path / 'checkpoint'
     save_path.mkdir(parents=True, exist_ok=True)
-    save_model(save_path, model_name,
-               f'epoch{str(epoch + 1).zfill(digits)}'
-               f'{"_checkpoint" if not save_epoch else ""}',
-               model, optimizer, loss, epoch, eval_number)
+    path = save_model(save_path, model_name,
+                      f'epoch{str(epoch + 1).zfill(digits)}'
+                      f'{"_checkpoint" if not save_epoch else ""}',
+                      model, optimizer, loss, epoch, eval_number)
+    return path
 
 
 def save_model(model_save_path, model_name, model_text,
-               model, optimizer, loss, epoch, eval_number=None):
+               model, optimizer, loss, epoch, eval_number: int = 0) -> Path:
     model.cpu()
     d = {
-        'model': model,  # kann (evtl) auch .state_dict
-        'optimizer': optimizer,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss,
         'epoch': epoch,
         'eval_number': eval_number
-        # wo der dataloader gerade ist wsl dazu schreiben = iterationsstufe
+
     }
-    if eval_number is not None:
-        d['eval_number'] = eval_number
-    torch.save(d, f'{model_save_path}/{model_name}_{model_text}.pth')
+    path = Path(model_save_path) / f'{model_name}_{model_text}.tar'
+    torch.save(d, path)  # TODO
     model.to(device)
     wipe_memory()
+    return path
 
 
 def save_final(model_save_path, model_name):
     assert Path(model_save_path).is_dir()
     best_checkpoint = torch.load(f'{model_save_path}/{model_name}_best.pth')
     model_to_save = best_checkpoint['model']
-    torch.save(model_to_save, f'{model_save_path}/{model_name}_final.pth')
+    torch.save(model_to_save, f'{model_save_path}/{model_name}_final.pth')  # TODO
     # einfacher zum finalen publishen mit model_to_save.state_dict()
 
 
 def log_stats(eval_loss, labels, eval_counter,
               bin_predictions, predictions,
               tb_logger, logger,
-              sfx=' Epoch Val', lower=False):
+              sfx=' Epoch Val', lower=False, desc=''):
     metrics = list()
     metrics.append(('loss', eval_loss))
     metrics.append(('ACC', skl.accuracy_score(labels, bin_predictions)))
     metrics.append(('Pr', skl.precision_score(labels, bin_predictions, zero_division=0)))
-    metrics.append(('Re', skl.recall_score(labels, bin_predictions)))
-    metrics.append(('F1', skl.f1_score(labels, bin_predictions)))
+    metrics.append(('Re', skl.recall_score(labels, bin_predictions, zero_division=0)))
+    metrics.append(('F1', skl.f1_score(labels, bin_predictions, zero_division=0)))
     metrics.append(('AUPR', skl.average_precision_score(labels, predictions)))
     metrics.append(('MCC', skl.matthews_corrcoef(labels, bin_predictions)))
 
     [tb_logger.add_scalar(f'{t[0].lower() if lower else t[0]}{sfx}', t[1],
                           eval_counter) for t in metrics]
-    logger.info(', '.join([f'{t[0].lower()}: {t[1]}' for t in metrics]))
+    logger.info(desc + '\t'.join([f'{t[1]:.4f}' for t in metrics]))
 
 
 def getlogger(logging_path, name=''):
@@ -112,7 +129,7 @@ def getlogger(logging_path, name=''):
     logger.addHandler(fh)
 
     sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(logging.DEBUG)
+    sh.setLevel(logging.INFO)
     sh.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(sh)
 

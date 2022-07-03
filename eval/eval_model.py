@@ -2,7 +2,6 @@ import argparse
 from pathlib import Path
 from time import perf_counter
 
-import h5py
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -10,6 +9,7 @@ from sklearn import metrics as skl
 from tqdm.auto import tqdm
 
 from utils import general_utils as utils
+from utils.dataloader import get_embeddings
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 MODEL_RESIDUE, MODEL_PROT = 'perresidue', 'perprot'
@@ -30,10 +30,8 @@ def add_args(parser):
     return parser
 
 
-def load_data(eval_set_paths, emb_paths, model_type):
-    test_df_list = []
-    embeddings = {}
-
+def load_data(eval_set_paths, emb_paths, model_type,
+              id_columns: list[str] = ['hash_A', 'hash_B']):
     if len(emb_paths) == len(eval_set_paths):
         embeddings_paths = emb_paths
     elif len(emb_paths) == 1:
@@ -41,27 +39,18 @@ def load_data(eval_set_paths, emb_paths, model_type):
     else:
         raise RuntimeError('Arbitrary Match between test files and embeddings files possible')
 
+    test_dfs, embeddings = list(), dict()
     for eval_set_path, emb_path in zip(eval_set_paths, embeddings_paths):
-        test_df = pd.read_csv(eval_set_path, sep="\t", header=None)
-        test_df = test_df.astype({0: str, 1: str})
-        test_df_list.append(test_df)
-
-        h5fi = h5py.File(emb_path, "r")
-        allProteins = set(test_df[0]).union(test_df[1])
-        for prot_name in tqdm(allProteins, desc=f"Loading embeddings {emb_path.stem} for {eval_set_path.stem}",
-                              position=0, leave=True,
-                              ascii=True):
-            if model_type == MODEL_PROT:
-                embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :]).float().mean(dim=0).unsqueeze(
-                    0).unsqueeze(0)
-            elif model_type == MODEL_RESIDUE:
-                embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :]).float().unsqueeze(0)
-        h5fi.close()
-
-    return test_df_list, embeddings
+        df = pd.read_csv(eval_set_path, sep='\t', header=0)
+        test_dfs.append(df)
+        embeddings.update(get_embeddings(emb_path, set(df[id_columns].values), per_protein=model_type == 'perprot'))
+    return test_dfs, embeddings
 
 
-def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_name):
+def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_name,
+               id_columns: list[str] = ['hash_A', 'hash_B'],
+               label_column: str = 'label',
+               ):
     logger.info(f' Evaluation {test_name} for model {model_name} '.center(120, '+'))
     model.eval()
 
@@ -71,8 +60,9 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
         predictions, labels = [], []
         eval_loss, num_pairs = 0, 0
 
-        for _, (n0, n1, label) in tqdm(test_df.iterrows(), total=len(test_df), desc="Predicting pairs",
-                                       position=0, leave=True, ascii=True):
+        for _, (n0, n1, label) in tqdm(test_df[id_columns + [label_column]].iterrows(),
+                                       total=len(test_df), desc="Predicting pairs",
+                                       position=0, leave=False, ascii=True):
             num_pairs += 1
             p0 = embeddings[n0].to(device)
             p1 = embeddings[n1].to(device)
@@ -91,8 +81,8 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
 
         eval_acc = skl.accuracy_score(labels, bin_predictions)
         eval_pr = skl.precision_score(labels, bin_predictions, zero_division=0)
-        eval_re = skl.recall_score(labels, bin_predictions)
-        eval_f1 = skl.f1_score(labels, bin_predictions)
+        eval_re = skl.recall_score(labels, bin_predictions, zero_division=0)
+        eval_f1 = skl.f1_score(labels, bin_predictions, zero_division=0)
         eval_aupr = skl.average_precision_score(labels, predictions)
         eval_mcc = skl.matthews_corrcoef(labels, bin_predictions)
 
@@ -106,7 +96,11 @@ def eval_model(model, test_df, embeddings, logger, save_path, test_name, model_n
     return eval_loss, num_pairs
 
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_args(parser)
+    args = parser.parse_args()
+
     model_paths = args.models
 
     emb_paths = args.embeddings
@@ -132,7 +126,5 @@ def main(args):
             eval_model(model, test_set, embeddings, logger, eval_path, test_name, model_name)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_args(parser)
-    main(parser.parse_args())
+if __name__ == '__main__':
+    main()

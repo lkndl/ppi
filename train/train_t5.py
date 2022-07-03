@@ -1,6 +1,5 @@
 import argparse
 import json
-import sys
 from copy import deepcopy
 from logging import Logger
 from pathlib import Path
@@ -13,14 +12,9 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-ppi_path = str(Path(__file__).resolve().parents[1])
-if ppi_path not in sys.path:
-    sys.path.append(ppi_path)
-    print(ppi_path)
-
-from interaction import InteractionMap, InteractionMapDscript
-from utils.dataloader import get_training_dataloader, DataLoader
+from .interaction import InteractionMap, InteractionMapDscript
 from utils import general_utils as utils
+from utils.dataloader import get_training_dataloader, DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -78,40 +72,25 @@ def add_args(parser):
     return parser
 
 
-def process_batch(model, n0, n1, embeddings, evaluate=False):
-    batch_size = len(n0)
+def train_step(model, n0, n1, y, embeddings, weight=0.35, evaluate=False):
+    ppi_weight = 10
 
     predictions = []
-    interaction_maps = []
-    for i in range(batch_size):
+    for i in range(len(n0)):
         z_a = embeddings[n0[i]].to(device)
         z_b = embeddings[n1[i]].to(device)
 
-        if evaluate:
-            predict = model.predict(z_a, z_b)  # die beiden sind gleich aufwändig
-        else:
-            cm, predict = model.map_predict(z_a, z_b)  # predict ruft das eh auf
-            interaction_maps.append(torch.mean(cm))
-        predictions.append(predict)
+        phat = model.predict(z_a, z_b)
+        if phat < 0 or phat > 1:
+            # print(f'{n0[i]}\t{n1[i]}\t{phat}')  # TODO log sometimes
+            phat = torch.clamp(phat, min=0, max=1)
+        predictions.append(phat)
     predictions = torch.stack(predictions, 0)
-    if evaluate:
-        return None, predictions
-    interaction_maps = torch.stack(interaction_maps, 0)
-    return interaction_maps, predictions
-
-
-def step_model(model, n0, n1, y, embeddings, weight=0.35, evaluate=False):
-    c_map_mag, predictions = process_batch(model, n0, n1, embeddings, evaluate)
-    y = Variable(y).to(device)
-
-    loss = nn.BCELoss()(predictions.float(), y.float())
-
-    if not evaluate:
-        cmap_loss = torch.mean(c_map_mag)
-        loss = (weight * loss) + ((1 - weight) * cmap_loss)
-    batch_size = len(predictions)
-
-    return loss, batch_size, predictions
+    y = Variable(y).float().to(device)
+    w = (torch.ones_like(predictions) + y * (ppi_weight - 1))  # TODO is this correct?
+    loss = nn.BCELoss(weight=w)(predictions, y)
+    # loss = nn.BCELoss()(predictions)
+    return loss, len(predictions), predictions
 
 
 def eval_model(model: InteractionMap,
@@ -125,8 +104,8 @@ def eval_model(model: InteractionMap,
         eval_loss, num_seqs = 0, 0
         for n0, n1, y in tqdm(val_loader, total=len(val_loader),
                               desc=f'Evaluation {eval_counter}',
-                              position=0, leave=True, ascii=True):
-            loss, batch_size, prediction = step_model(
+                              position=0, leave=False, ascii=True):
+            loss, batch_size, prediction = train_step(
                 model, n0, n1, y, embeddings, weight=interaction_weight, evaluate=True)
             predictions.append(prediction)
             labels.append(y)
@@ -190,7 +169,7 @@ def train_model(model: InteractionMap,
             num_seqs, epoch_loss = 0, 0
             for batch_idx, (z0, z1, y) in enumerate(
                     tqdm(dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}",
-                         total=len(dataloader), position=0, leave=True, ascii=True),
+                         total=len(dataloader), position=0, leave=False, ascii=True),
                     (epoch - 1) * len(dataloader)):
                 iterations_counter += 1
                 if iterations_counter % (max(int(.05 * value_rounder(len(dataloader), 3)), 1)) == 0:
@@ -212,7 +191,7 @@ def train_model(model: InteractionMap,
                                            model, optim, considered_loss, save_epoch=False)
                     logger.info(f"# Checkpoint model to {model_save_path}/checkpoint/")
 
-                loss, b, _ = step_model(model, z0, z1, y, embeddings,
+                loss, b, _ = train_step(model, z0, z1, y, embeddings,
                                         weight=interaction_weight, evaluate=False)
                 num_seqs += b
                 epoch_loss += loss
@@ -265,7 +244,10 @@ def handle_config(config):
     return config
 
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_args(parser)
+    args = parser.parse_args()
     utils.set_seed(42)
 
     if not args.config:
@@ -332,7 +314,5 @@ def main(args):
     tensorboard_logger.close()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_args(parser)
-    main(parser.parse_args())
+if __name__ == '__main__':
+    main()

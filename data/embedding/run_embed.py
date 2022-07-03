@@ -1,14 +1,9 @@
 import argparse
-import sys
 from pathlib import Path
 
 import torch
 
-ppi_path = str(Path(__file__).resolve().parents[2])
-if ppi_path not in sys.path:
-    sys.path.append(ppi_path)
-
-from t5_embedd import embed_from_fasta
+from .t5_embedd import embed_from_fasta
 
 
 def add_args(parser):
@@ -23,7 +18,11 @@ def add_args(parser):
     return parser
 
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_args(parser)
+    args = parser.parse_args()
+
     inPath = args.seqs  # in fasta-format
     outPath = args.outfile
     fastaRef = args.fastaref if args.fastaref else (p := Path(outPath)).with_name(p.stem + '_ref')
@@ -38,6 +37,4 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_args(parser)
-    main(parser.parse_args())
+    main()

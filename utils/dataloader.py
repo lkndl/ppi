@@ -16,18 +16,20 @@ def get_dataloaders_and_ids(tsv_path: Path,
                             id_columns: list[str] = ['hash_A', 'hash_B'],
                             label_column: str = 'label',
                             split_column: str = None,
-                            ) -> tuple[Union[DataLoader, list[DataLoader]], set[str]]:
+                            shuffle: bool = True,
+                            ) -> tuple[Union[DataLoader, dict[str, DataLoader]], set[str]]:
     all_pairs = pd.read_csv(tsv_path, sep='\t', header=0)
     assert len(id_columns) == 2 and set(id_columns) < set(all_pairs.columns), \
         f'Only exactly two columns from {all_pairs.columns} can contain protein IDs, ' \
         f'but {id_columns} was passed.'
 
-    if split_column is None:
+    if separate := (split_column is None):
+        # add a dummy column
         split_column = secrets.token_urlsafe(8)
         all_pairs[split_column] = 0
 
-    data_loader, loaders, prot_ids = None, list(), set()
-    for _, pairs in all_pairs.groupby(split_column, sort=True):
+    data_loader, loaders, prot_ids = None, dict(), set()
+    for cclass, pairs in all_pairs.groupby(split_column, sort=True):
         prot_a, prot_b = pairs[id_columns].values.T
         prot_ids |= set(np.unique(prot_a)) | set(np.unique(prot_b))
         pair_label = torch.from_numpy(pairs[label_column].values)
@@ -40,11 +42,11 @@ def get_dataloaders_and_ids(tsv_path: Path,
             dataset,
             batch_size=batch_size,
             collate_fn=collate_paired_sequences,
-            shuffle=True,
+            shuffle=shuffle,
         )
-        loaders.append(data_loader)
+        loaders[str(cclass)] = data_loader
 
-    return (data_loader if len(loaders) == 1 else loaders), prot_ids
+    return (data_loader if separate else loaders), prot_ids
 
 
 def get_embeddings(h5_path: Path,
@@ -53,7 +55,7 @@ def get_embeddings(h5_path: Path,
                    ) -> dict[str, torch.Tensor]:
     with h5py.File(h5_path, 'r') as h5_file:
         embeddings = dict()
-        for prot_id in tqdm(ids, desc='read H5:', position=0, leave=True, ascii=True):
+        for prot_id in tqdm(ids, desc='read H5:', position=0, leave=False, ascii=True):
             m_bed = torch.from_numpy(h5_file[prot_id][:, :]).float()
             if per_protein:
                 embeddings[prot_id] = m_bed.mean(dim=0).unsqueeze(0).unsqueeze(0)

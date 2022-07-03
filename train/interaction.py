@@ -109,13 +109,14 @@ class InteractionMap(nn.Module):
             kernel_width,
             pool_size=9,
             gamma_init=0,
-            activation=nn.Sigmoid(),
+            activation=nn.GELU(),
             use_w=False
     ):
         super(InteractionMap, self).__init__()
         self.embedding = EmbeddingsProjection(1024, emb_projection_dim, dropout_p,
                                               activation=nn.ELU())
-        self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width)
+        self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width,
+                                  cnn_activation=nn.Identity())
 
         self.maxPool = nn.MaxPool2d(pool_size, padding=pool_size // 2)
         self.gamma = nn.Parameter(torch.FloatTensor([gamma_init]))
@@ -130,7 +131,7 @@ class InteractionMap(nn.Module):
         C = self.contact(e0, e1)
         return C
 
-    def map_predict(self, z0, z1):
+    def map_predict_old(self, z0, z1):
         C = self.cpred(z0, z1)
         yhat = self.maxPool(C)
 
@@ -141,6 +142,28 @@ class InteractionMap(nn.Module):
         phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
         phat = self.activation(phat)
         return C, phat
+
+    def map_predict(self, z0, z1):
+        C = self.cpred(z0, z1)
+        # yhat = nn.GELU()(C)
+        # yhat = torch.gelu(C)
+        yhat = self.activation(C)
+        phat = torch.mean(yhat)
+        # phat = torch.clamp(phat, min=0, max=1)
+        return C, phat
+
+    def map_predict_modified(self, z0, z1):
+        C = self.cpred(z0, z1)  # hier ist schon ein sigmoid drauf aka im intervall [0, 1]
+        yhat = self.maxPool(C)
+
+        # Mean of contact predictions where p_ij > mu + gamma*sigma
+        mu = torch.mean(yhat)
+        sigma = torch.var(yhat)
+        Q = yhat - mu - (self.gamma * sigma)  # normalization would be *division* by std
+        Q = torch.relu(Q)
+        phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
+        phat = self.activation(phat)
+        return C, phat, yhat
 
     def predict(self, z0, z1):
         _, phat = self.map_predict(z0, z1)
