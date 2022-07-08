@@ -7,7 +7,7 @@ import pandas as pd
 import secrets
 import torch
 from torch.utils.data import Dataset, DataLoader
-from tqdm.auto import tqdm
+from rich.progress import Progress
 
 
 def get_dataloaders_and_ids(tsv_path: Path,
@@ -51,11 +51,12 @@ def get_dataloaders_and_ids(tsv_path: Path,
 
 def get_embeddings(h5_path: Path,
                    ids: set,
-                   per_protein: bool = False
+                   per_protein: bool = False,
+                   progress: Progress = Progress()
                    ) -> dict[str, torch.Tensor]:
     with h5py.File(h5_path, 'r') as h5_file:
         embeddings = dict()
-        for prot_id in tqdm(ids, desc='read H5:', position=0, leave=False, ascii=True):
+        for prot_id in progress.track(ids, description='read H5'):
             m_bed = torch.from_numpy(h5_file[prot_id][:, :]).float()
             if per_protein:
                 embeddings[prot_id] = m_bed.mean(dim=0).unsqueeze(0).unsqueeze(0)

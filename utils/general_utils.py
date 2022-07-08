@@ -46,19 +46,21 @@ def save_config(config: dict, model_save_path: Path):
         json.dump(config, f)
 
 
-def checkpoint(model: nn.Module, optim: Adam, path: Path, **kwargs) -> None:
+def checkpoint(model: nn.Module, optim: Adam,
+               path: Union[str, Path], **kwargs) -> None:
     model.cpu()
     chk = dict(model_state_dict=model.state_dict(),
                optim_state_dict=optim.state_dict())
     chk.update(kwargs)
-    torch.save(chk, path)
+    torch.save(chk, Path(path).with_suffix('.tar'))
     model.to(device)
 
 
-def publish(checkpoint: Path, cls: nn.Module, path: Path) -> None:
+def publish(checkpoint_file: Union[str, Path],
+            cls: nn.Module, path: Union[str, Path]) -> None:
     model = cls()
-    model.load_state_dict(torch.load(checkpoint)['model_state_dict'])
-    torch.save(model, path)
+    model.load_state_dict(torch.load(checkpoint_file)['model_state_dict'])
+    torch.save(model, Path(path).with_suffix('.pth'))
 
 
 def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch,

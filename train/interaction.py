@@ -1,7 +1,8 @@
 import numpy as np
-import torch
 
-from torch import nn as nn
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 class EmbeddingsProjection(nn.Module):
@@ -98,6 +99,35 @@ class ContactCNNDscript(nn.Module):
         return C
 
 
+class Net(nn.Module):
+
+    def __init__(self):
+        super(Net, self).__init__()
+        # 1 input image channel, 6 output channels, 5x5 square convolution kernel
+        self.conv1 = nn.Conv2d(1, 6, 5)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        # change receptive field via stride + dilation
+        # https://discuss.pytorch.org/t/how-to-create-convnet-for-variable-size-input-dimension-images/1906/2
+        self.adp = nn.AdaptiveAvgPool2d((5, 5))  # for fixed-size, square (5, 5) output
+        # an affine operation: y = Wx + b
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # 5*5 from image dimension
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 1)
+
+    def forward(self, x):
+        # Max pooling over a (2, 2) window
+        x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
+        # If the size is a square, you can specify with a single number
+        x = F.max_pool2d(F.relu(self.conv2(x)), 2)
+        x = self.adp(x)
+        x = torch.flatten(x, 1)  # flatten all dimensions except the batch dimension
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = nn.Sigmoid()(self.fc3(x))
+        # x = torch.clamp(x, min=0, max=1)
+        return x
+
+
 class InteractionMap(nn.Module):
     """Module 3: Network combined and prediction"""
 
@@ -110,7 +140,9 @@ class InteractionMap(nn.Module):
             pool_size=9,
             gamma_init=0,
             activation=nn.GELU(),
-            use_w=False
+            use_w=False,
+            architecture='cnn',
+            **kwargs
     ):
         super(InteractionMap, self).__init__()
         self.embedding = EmbeddingsProjection(1024, emb_projection_dim, dropout_p,
@@ -121,6 +153,12 @@ class InteractionMap(nn.Module):
         self.maxPool = nn.MaxPool2d(pool_size, padding=pool_size // 2)
         self.gamma = nn.Parameter(torch.FloatTensor([gamma_init]))
         self.activation = activation
+        self.cmap_cnn = Net()
+        # self.cmap_fft = cosinus + sinus anteile verrechnen
+        # phase value zurück abstrahieren = imaginäre einheit
+        # fourier series bekommen
+        self.predict_func = dict(cnn=self.cnn_predict, gelu=self.gelu_predict,
+                                 fft=self.fft_predict)[architecture]
 
     def embed(self, z):
         return self.embedding(z)
@@ -131,42 +169,39 @@ class InteractionMap(nn.Module):
         C = self.contact(e0, e1)
         return C
 
-    def map_predict_old(self, z0, z1):
-        C = self.cpred(z0, z1)
+    def map_predict(self, z0, z1):
+        C = self.cpred(z0, z1)  # hier ist schon ein sigmoid drauf
         yhat = self.maxPool(C)
 
         # Mean of contact predictions where p_ij > mu + gamma*sigma
         mu = torch.mean(yhat)
         sigma = torch.var(yhat)
-        Q = torch.relu(yhat - mu - (self.gamma * sigma))
+        Q = torch.relu(yhat - mu - (self.gamma * sigma))  # normalization would be *division* by std
         phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
         phat = self.activation(phat)
         return C, phat
 
-    def map_predict(self, z0, z1):
+    def predict(self, z0, z1):
+        _, phat = self.map_predict(z0, z1)
+        return phat
+
+    def gelu_predict(self, z0, z1):
         C = self.cpred(z0, z1)
         # yhat = nn.GELU()(C)
         # yhat = torch.gelu(C)
         yhat = self.activation(C)
         phat = torch.mean(yhat)
-        # phat = torch.clamp(phat, min=0, max=1)
-        return C, phat
+        phat = torch.clamp(phat, min=0, max=1)
+        return phat
 
-    def map_predict_modified(self, z0, z1):
-        C = self.cpred(z0, z1)  # hier ist schon ein sigmoid drauf aka im intervall [0, 1]
-        yhat = self.maxPool(C)
+    def cnn_predict(self, z0, z1):
+        C = self.cpred(z0, z1)
+        phat = self.cmap_cnn(C)
+        return phat
 
-        # Mean of contact predictions where p_ij > mu + gamma*sigma
-        mu = torch.mean(yhat)
-        sigma = torch.var(yhat)
-        Q = yhat - mu - (self.gamma * sigma)  # normalization would be *division* by std
-        Q = torch.relu(Q)
-        phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
-        phat = self.activation(phat)
-        return C, phat, yhat
-
-    def predict(self, z0, z1):
-        _, phat = self.map_predict(z0, z1)
+    def fft_predict(self, z0, z1):
+        C = self.cpred(z0, z1)
+        phat = self.cmap_fft(C)
         return phat
 
     def forward(self, z0, z1):
