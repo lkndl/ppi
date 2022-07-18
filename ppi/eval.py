@@ -45,7 +45,7 @@ class Intervalometer:
             do_it_now = 'batch'
         if not do_it_now:
             return False
-        self.restart(start_epoch=epoch, start_batch=batch)
+        self.restart(start_epoch=epoch, start_batch=batch - 1)
         return do_it_now
 
 

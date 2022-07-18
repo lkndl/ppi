@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import torch
 import warnings
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Union
 
+import numpy as np
 import typer
 from dataclass_wizard import JSONWizard
 
@@ -253,6 +255,11 @@ class Config(SnakeConfig):
             if config.is_file() and mode == TrainMode.resume:
                 config.rename(config.with_suffix('.json.bak'))
             self.to_json_file(str(config))
+
+        seed = self.train_params.seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
         return FlatConfig(self)
 
 

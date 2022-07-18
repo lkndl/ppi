@@ -154,9 +154,6 @@ class InteractionMap(nn.Module):
         self.gamma = nn.Parameter(torch.FloatTensor([gamma_init]))
         self.activation = activation
         self.cmap_cnn = Net()
-        # self.cmap_fft = cosinus + sinus anteile verrechnen
-        # phase value zurück abstrahieren = imaginäre einheit
-        # fourier series bekommen
         self.predict_func = dict(cnn=self.cnn_predict, gelu=self.gelu_predict,
                                  fft=self.fft_predict)[architecture]
 
@@ -201,8 +198,22 @@ class InteractionMap(nn.Module):
 
     def fft_predict(self, z0, z1):
         C = self.cpred(z0, z1)
-        phat = self.cmap_fft(C)
-        return phat
+        # convert logits to
+        C = nn.Sigmoid()(C)
+
+        # map real-valued, 2D input to the frequency domain
+        f1 = torch.fft.rfft2(C[0, 0])
+        f1[0, 0] = 0  # this is the average power. We use it to "level" the psd
+
+        # eliminate very high and very low frequencies
+        for f in [f1.real, f1.imag]:
+            lower, upper = torch.quantile(
+                f, q=torch.Tensor([.05, .95]), keepdim=False)
+            f[(lower < f) & (f < upper)] = 0
+
+        # map back to the cmap domain
+        cc = torch.fft.irfft2(f1)
+        return torch.clamp(cc.max(), min=0, max=1)
 
     def forward(self, z0, z1):
         return self.predict(z0, z1)

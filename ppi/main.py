@@ -11,6 +11,7 @@ import rich
 import torch
 import torch.nn as nn
 import typer
+from tqdm import tqdm
 from Bio import SeqIO
 from rich.progress import (
     BarColumn,
@@ -77,7 +78,7 @@ def embed(ctx: typer.Context,
                               f'or define append/overwrite mode')
     with h5py.File(h5_out, h5_mode) as new_h5, \
             h5py.File('/mnt/project/kaindl/ppi/mem_leak/smaller.h5', 'r') as old_h5:
-        for seq_id in seqs:  # rich.progress.track(seqs, total=len(seqs)):
+        for seq_id in rich.progress.track(seqs, total=len(seqs)):
             if seq_id in old_h5:
                 if seq_id in new_h5:
                     if not np.allclose(new_h5[seq_id], old_h5[seq_id]):
@@ -190,6 +191,7 @@ def evaluate(ctx: typer.Context,
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def train(ctx: typer.Context,
+          use_tqdm: bool = typer.Option(False),
           train_tsv: Path = typer.Option(None),
           h5: Path = typer.Option(None),
           epochs: int = typer.Option(None),
@@ -221,14 +223,24 @@ def train(ctx: typer.Context,
         epoch_progress, batch_progress, cclass_progress)
     epoch_task_id = epoch_progress.add_task('train', total=epochs)
 
+    # toggle between using rich or not
+    if use_tqdm:
+        _print = print
+        epoch_tracker, batch_tracker = tqdm, tqdm
+        e_kwargs, b_kwargs = dict(desc='epoch', colour='green'), \
+                             dict(desc='batch', position=0, leave=False)
+    else:
+        _print = epoch_progress.console.print
+        epoch_tracker, batch_tracker = epoch_progress.track, batch_progress.track
+        e_kwargs, b_kwargs = dict(task_id=epoch_task_id), dict()
+
     with rich.live.Live(progress_group) as live:
-        print = epoch_progress.console.print
 
         model = InteractionMap(**vars(cfg))
         params = [p for p in model.parameters() if p.requires_grad]
         optim = Adam(params, lr=cfg.lr, weight_decay=0)
         model = model.to(device)
-        print('model loaded')
+        _print('model loaded')
 
         dataloader, seq_ids = get_dataloaders_and_ids(
             cfg.train_tsv, cfg.batch_size, augment=cfg.augment, shuffle=cfg.shuffle)
@@ -236,23 +248,26 @@ def train(ctx: typer.Context,
             cfg.val_tsv, cfg.batch_size, augment=cfg.augment, shuffle=cfg.shuffle,
             split_column='cclass')
         embeddings = get_embeddings(cfg.h5, seq_ids | val_seq_ids)
-        print('data loaded')
+        _print('data loaded')
 
         metrics = Metrics()
         evaluator = Evaluator(cfg, model, writer, val_loaders,
                               embeddings, cclass_progress, len(dataloader))
-        epoch_progress.advance(epoch_task_id)
+        if not use_tqdm:
+            epoch_progress.advance(epoch_task_id)
         batch, finished = 0, False
-        for epoch in epoch_progress.track(
-                range(cfg.epochs), task_id=epoch_task_id):
+        for epoch in epoch_tracker(range(cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
 
-            batch_task_id = batch_progress.add_task('', total=len(dataloader))
+            if not use_tqdm:
+                batch_task_id = batch_progress.add_task('', total=len(dataloader))
+                b_kwargs = dict(task_id=batch_task_id)
+            else:
+                b_kwargs.update(desc=f'epoch {epoch + 1}/{cfg.epochs}')
 
             # i = 0
-            for n0, n1, labels in batch_progress.track(
-                    dataloader, task_id=batch_task_id):
+            for n0, n1, labels in batch_tracker(dataloader, **b_kwargs):
                 # if (i := i + 1) > 10:
                 #     break
 
@@ -285,17 +300,16 @@ def train(ctx: typer.Context,
                     if finished:
                         break
 
-            batch_progress.update(batch_task_id, visible=False)
+            if not use_tqdm:
+                batch_progress.update(batch_task_id, visible=False)
             epoch_metrics = metrics.compute()
             writer.add_interval(epoch_metrics, 'epoch', epoch + 1)
             metrics.reset()
-            # using metrics.acc.compute() and metrics.reset gives per-epoch-loss
-            # without reset would be after-epoch-loss
             if finished:
                 break
 
         if not finished:
-            print('quit!')
+            _print('quit!')
             # fresh out of epochs
 
         writer.close()
