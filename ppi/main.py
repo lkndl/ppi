@@ -11,7 +11,6 @@ import rich
 import torch
 import torch.nn as nn
 import typer
-from tqdm import tqdm
 from Bio import SeqIO
 from rich.progress import (
     BarColumn,
@@ -21,6 +20,7 @@ from rich.progress import (
     TaskProgressColumn
 )
 from torch.optim import Adam
+from tqdm import tqdm
 
 warnings.simplefilter(action='ignore', category=UserWarning)
 
@@ -154,17 +154,17 @@ def evaluate(ctx: typer.Context,
     embeddings = get_embeddings(h5, seq_ids)
 
     path = model
-    model = InteractionMap(
-        emb_projection_dim=100,
-        dropout_p=.1,
-        map_hidden_dim=50,
-        kernel_width=7,
-        pool_size=9,
-        activation=nn.GELU()
-    )
+    model = InteractionMap(**vars(cfg))
     if path.suffix == '.tar':
         checkpoint = torch.load(path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
+        # TODO load anything else here?
+        #  this should go to the place where we resume:
+        if rng_state := checkpoint.get('torch_rng_state'):
+            torch.set_rng_state(rng_state)
+        if rng_state := checkpoint.get('numpy_rng_state'):
+            np.random.set_state(rng_state)
+
     elif path.suffix == '.pth':
         model.load_state_dict(torch.load(path))
     else:
@@ -194,11 +194,12 @@ def train(ctx: typer.Context,
           use_tqdm: bool = typer.Option(False),
           train_tsv: Path = typer.Option(None),
           h5: Path = typer.Option(None),
-          epochs: int = typer.Option(None),
+          epochs: int = typer.Option(2),
           ) -> None:
     cfg = parse(ctx)
+    print(f'using device: {device}')
 
-    writer = Writer(log_dir=f'tboard/{cfg.name}', flush_secs=10)
+    writer = Writer(log_dir=cfg.wd / 'tboard' / cfg.name, flush_secs=10)
     writer.add_text(cfg.name, str(cfg))
     # layout = {
     #     'p_hat': {'batch': ['Multiline', ['p_hat/batch']],
@@ -251,7 +252,7 @@ def train(ctx: typer.Context,
         _print('data loaded')
 
         metrics = Metrics()
-        evaluator = Evaluator(cfg, model, writer, val_loaders,
+        evaluator = Evaluator(cfg, model, optim, writer, val_loaders,
                               embeddings, cclass_progress, len(dataloader))
         if not use_tqdm:
             epoch_progress.advance(epoch_task_id)
@@ -305,15 +306,15 @@ def train(ctx: typer.Context,
             epoch_metrics = metrics.compute()
             writer.add_interval(epoch_metrics, 'epoch', epoch + 1)
             metrics.reset()
+            utils.checkpoint(model, optim, cfg.wd / cfg.name / f'chk_{epoch}.tar',
+                             batch=batch, epoch=epoch, epochs=cfg.epochs)
             if finished:
                 break
 
         if not finished:
-            _print('quit!')
-            # fresh out of epochs
+            _print('')
 
         writer.close()
-        utils.checkpoint(model, optim, cfg.wd / f'checkpoint.tar')
 
 
 if __name__ == '__main__':

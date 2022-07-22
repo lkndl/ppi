@@ -5,10 +5,12 @@ from time import perf_counter
 import torch
 import torch.nn as nn
 from rich.progress import Progress
+from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from ppi.metrics import Metrics, Writer
 from train.interaction import InteractionMap
+from utils import general_utils as utils
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -53,12 +55,14 @@ class Evaluator:
     impatience: int = 0
     patience: int = 20
 
-    def __init__(self, cfg, model: InteractionMap, writer: Writer,
+    def __init__(self, cfg, model: InteractionMap,
+                 optim: Adam, writer: Writer,
                  dataloaders: dict[str, DataLoader],
                  embeddings: dict[str, torch.Tensor],
                  progress: Progress, n_train_batches: int):
         self.cfg = cfg
         self.model = model
+        self.optim = optim
         self.writer = writer
         self.dataloaders = dataloaders
         self.embeddings = embeddings
@@ -120,7 +124,12 @@ class Evaluator:
                                        label, v in d.items()}
             writer.add_interval(cclass_metrics, f'val', train_batch)
             self.results[train_batch] = cclass_metrics
-            return False
+            # TODO keep track of best, and keep that checkpoint up-to-date
+            utils.checkpoint(self.model, self.optim, self.cfg.wd / self.cfg.name / 'chk_best.tar',
+                             batch=train_batch, eval_results=results)
+
+        model.train()
+        return False
 
     def __call__(self, batch: int = 0) -> bool:
         # check what'sin dataloaders

@@ -51,6 +51,8 @@ def checkpoint(model: nn.Module, optim: Adam,
     model.cpu()
     chk = dict(model_state_dict=model.state_dict(),
                optim_state_dict=optim.state_dict())
+    chk.update(dict(torch_rng_state=torch.get_rng_state(),
+                    numpy_rng_state=np.random.get_state()))
     chk.update(kwargs)
     torch.save(chk, Path(path).with_suffix('.tar'))
     model.to(device)

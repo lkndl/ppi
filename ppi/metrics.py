@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Union
 
 import torch
+import matplotlib.pyplot as plt
 import torchmetrics as tm
 from torch.utils.tensorboard import SummaryWriter
 
@@ -19,6 +20,7 @@ class Metrics:
     p0: tm.MeanMetric
     p1: tm.MeanMetric
     mcc: tm.MatthewsCorrCoef
+    conf: tm.ConfusionMatrix
 
     def __init__(self):
         for name, cls in zip(
@@ -28,6 +30,7 @@ class Metrics:
                  tm.AveragePrecision, *[tm.MeanMetric] * 3]):
             setattr(self, name, cls().to(device))
         self.mcc = tm.MatthewsCorrCoef(2).to(device)
+        self.conf = tm.ConfusionMatrix(2).to(device)
 
     def __iter__(self):
         for name, metric in vars(self).items():
@@ -62,6 +65,7 @@ class Metrics:
             d['p_hat'] = pd
         if torch.isnan(d['aupr']):
             d.pop('aupr')
+        d.pop('conf')
         return d
 
 
@@ -71,6 +75,21 @@ class Writer(SummaryWriter):
         super(Writer, self).__init__(*args, **kwargs)
 
     def add_interval(self, d: dict, interval: str, idx: int):
+        if (conf := d.pop('conf', None)) is not None:
+            if type(conf) == dict:
+                fig, axes = plt.subplots(1, 3, figsize=(3, 1),
+                                         sharey=True, sharex=True)
+                for i, ax in enumerate(axes):
+                    c = f'C{i + 1}'
+                    ax.imshow(conf[c].cpu())
+                    ax.set(title=c, xticks=[0, 1], yticks=[0, 1])
+            else:
+                fig, ax = plt.subplots(1, 1, figsize=(1, 1))
+                ax.imshow(conf.cpu())
+                ax.set(xticks=[0, 1], yticks=[0, 1])
+            fig.tight_layout()
+            self.add_figure(f'conf/{interval}', fig, idx)
+
         for k, v in d.items():
             if type(v) != dict:
                 self.add_scalar(f'{k}/{interval}', v, idx)

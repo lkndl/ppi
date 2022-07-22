@@ -115,6 +115,7 @@ class Architecture(str, Enum):
     gelu = 'gelu'
     cnn = 'cnn'
     fft = 'fft'
+    cmap = 'cmap'
 
 
 @dataclass
@@ -141,10 +142,10 @@ class TrainParams(SnakeConfig):
     val_tsv: str = _ / 'apid_validation.tsv'
     h5: str = Path('apid_huri.h5')
 
-    lr: float = .005
-    seed: int = 42
-    epochs: int = 4
-    batch_size: int = 5
+    lr: float = .001
+    seed: int = 42  # np.random.default_rng().integers(0, 9999)
+    epochs: int = 2
+    batch_size: int = 11
     ppi_weight: float = 5.
     patience: int = 20
     augment: bool = True
@@ -166,9 +167,9 @@ class TestParams(SnakeConfig):
     test_tsv: str = Path('/mnt/project/kaindl/ppi/ppi/smaller/huri_test.tsv')
     out_path: str = Path('predictions.tsv')
 
-    eval_train_ratio: float = 20.
+    eval_train_ratio: float = 999999.
     eval_time_interval: int = 60 * 60 * 2  # 2 hours
-    eval_epoch_interval: float = .2
+    eval_epoch_interval: float = .05
 
     def __post_init__(self):
         self.test_tsv = Path(self.test_tsv)
@@ -202,6 +203,36 @@ class FlatConfig(SnakeConfig):
 
 @dataclass(init=False)
 class Config(SnakeConfig):
+    """
+    io:
+        outputOverwriteFile: /mnt/project/kaindl/ppi/runs/full/fft_stdout.log
+        errorOverwriteFile:  /mnt/project/kaindl/ppi/runs/full/fft_stderr.log
+        cwd: /mnt/project/kaindl/ppi/ppi
+    limit:
+        coreLimit: 10
+        runtimeLimit: 336:00
+        memLimit: 100GB!
+    resource:
+        # gpu: num=1/task:mode=shared:gmem=32G:j_exclusive=no:gpack=yes
+        gpu: num=1:mode=exclusive_process:gmem=32G:j_exclusive=yes
+        machines: lsf-server-2
+
+    notify:
+        notifyJobDone: ""
+        notifyJobExit:
+
+    properties:
+        queueName: mid-end-normal
+        jobName:   kaindl_fft
+    command: >
+      ppi train
+      --train-tsv /mnt/project/kaindl/ppi/data/ppi_dataset/apid_train.tsv
+      --h5 /mnt/project/kaindl/ppi/data/embedding/apid_huri.h5
+      --val-tsv /mnt/project/kaindl/ppi/data/ppi_dataset/apid_validation.tsv
+      --wd /mnt/project/kaindl/ppi/runs/full/ --use-tqdm
+      --batch-size 15 --seed 42 --epochs 10 --eval_time_interval 43200
+      --architecture fft --name fft
+    """
     model_params: ModelParams
     train_params: TrainParams
     test_params: TestParams

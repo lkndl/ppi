@@ -2,7 +2,9 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.cuda.amp import custom_bwd, custom_fwd
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 class EmbeddingsProjection(nn.Module):
@@ -99,16 +101,14 @@ class ContactCNNDscript(nn.Module):
         return C
 
 
-class Net(nn.Module):
+class IMapCNN(nn.Module):
 
     def __init__(self):
-        super(Net, self).__init__()
+        super(IMapCNN, self).__init__()
         # 1 input image channel, 6 output channels, 5x5 square convolution kernel
         self.conv1 = nn.Conv2d(1, 6, 5)
         self.conv2 = nn.Conv2d(6, 16, 5)
         # change receptive field via stride + dilation
-        # https://discuss.pytorch.org/t/how-to-create-convnet-for-variable-size-input-dimension-images/1906/2
-        self.adp = nn.AdaptiveAvgPool2d((5, 5))  # for fixed-size, square (5, 5) output
         # an affine operation: y = Wx + b
         self.fc1 = nn.Linear(16 * 5 * 5, 120)  # 5*5 from image dimension
         self.fc2 = nn.Linear(120, 84)
@@ -116,16 +116,46 @@ class Net(nn.Module):
 
     def forward(self, x):
         # Max pooling over a (2, 2) window
-        x = F.max_pool2d(F.relu(self.conv1(x)), (2, 2))
+        # x = torch.sigmoid(x)  # TODO remove
+        x = torch.max_pool2d(torch.relu(self.conv1(x)), (2, 2))
         # If the size is a square, you can specify with a single number
-        x = F.max_pool2d(F.relu(self.conv2(x)), 2)
-        x = self.adp(x)
+        x = torch.max_pool2d(torch.relu(self.conv2(x)), 2)
+        # https://discuss.pytorch.org/t/how-to-create-convnet-for-variable-size-input-dimension-images/1906/2
+        x = torch.nn.functional.adaptive_avg_pool2d(x, 5)  # for fixed-size, square output
         x = torch.flatten(x, 1)  # flatten all dimensions except the batch dimension
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = nn.Sigmoid()(self.fc3(x))
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.sigmoid(self.fc3(x))
         # x = torch.clamp(x, min=0, max=1)
         return x
+
+
+class DifferentiableClamp(torch.autograd.Function):
+    """
+    https://discuss.pytorch.org/t/exluding-torch-clamp-from-backpropagation-as-tf-stop-gradient-in-tensorflow/52404/6
+    In the forward pass this operation behaves like torch.clamp.
+    But in the backward pass its gradient is 1 everywhere, as if instead of clamp one had used the identity function.
+    """
+
+    @staticmethod
+    @custom_fwd
+    def forward(ctx, input, min, max):
+        return input.clamp(min=min, max=max)
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_output):
+        return grad_output.clone(), None, None
+
+
+def dclamp(input, min, max):
+    """
+    Like torch.clamp, but with a constant 1-gradient.
+    :param input: The input that is to be clamped.
+    :param min: The minimum value of the output.
+    :param max: The maximum value of the output.
+    """
+    return DifferentiableClamp.apply(input, min, max)
 
 
 class InteractionMap(nn.Module):
@@ -153,9 +183,9 @@ class InteractionMap(nn.Module):
         self.maxPool = nn.MaxPool2d(pool_size, padding=pool_size // 2)
         self.gamma = nn.Parameter(torch.FloatTensor([gamma_init]))
         self.activation = activation
-        self.cmap_cnn = Net()
+        self.cmap_cnn = IMapCNN()
         self.predict_func = dict(cnn=self.cnn_predict, gelu=self.gelu_predict,
-                                 fft=self.fft_predict)[architecture]
+                                 fft=self.fft_predict, cmap=self.cmap_predict)[architecture]
 
     def embed(self, z):
         return self.embedding(z)
@@ -173,9 +203,9 @@ class InteractionMap(nn.Module):
         # Mean of contact predictions where p_ij > mu + gamma*sigma
         mu = torch.mean(yhat)
         sigma = torch.var(yhat)
-        Q = torch.relu(yhat - mu - (self.gamma * sigma))  # normalization would be *division* by std
+        Q = torch.relu(yhat - mu - (self.gamma * sigma))
         phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
-        phat = self.activation(phat)
+        phat = torch.sigmoid(phat)
         return C, phat
 
     def predict(self, z0, z1):
@@ -183,37 +213,38 @@ class InteractionMap(nn.Module):
         return phat
 
     def gelu_predict(self, z0, z1):
+        # gradients might vanish!
+        # combining a GELU with a sigmoid or max() is BS
         C = self.cpred(z0, z1)
-        # yhat = nn.GELU()(C)
-        # yhat = torch.gelu(C)
-        yhat = self.activation(C)
-        phat = torch.mean(yhat)
-        phat = torch.clamp(phat, min=0, max=1)
-        return phat
+        # torch.nn.functional.mish() # TODO incomplete!!
+        yhat = torch.nn.functional.gelu(C)
+        return torch.tanh(yhat.mean()).clamp(min=0, max=1)
 
     def cnn_predict(self, z0, z1):
         C = self.cpred(z0, z1)
-        phat = self.cmap_cnn(C)
-        return phat
+        return self.cmap_cnn(C)
+
+    def cmap_predict(self, z0, z1):
+        C = self.cpred(z0, z1)
+        return torch.sigmoid(C.max())
 
     def fft_predict(self, z0, z1):
         C = self.cpred(z0, z1)
-        # convert logits to
-        C = nn.Sigmoid()(C)
-
+        # # map logits to [0, 1]
+        # C = torch.sigmoid(C)  # TODO sigmoid early
         # map real-valued, 2D input to the frequency domain
         f1 = torch.fft.rfft2(C[0, 0])
         f1[0, 0] = 0  # this is the average power. We use it to "level" the psd
-
         # eliminate very high and very low frequencies
         for f in [f1.real, f1.imag]:
             lower, upper = torch.quantile(
-                f, q=torch.Tensor([.05, .95]), keepdim=False)
+                f, q=torch.Tensor([.05, .95]).to(device), keepdim=False)
             f[(lower < f) & (f < upper)] = 0
-
-        # map back to the cmap domain
+        # map back to the attention domain
         cc = torch.fft.irfft2(f1)
-        return torch.clamp(cc.max(), min=0, max=1)
+        # # pick and limit the max
+        # return cc.max().clamp(min=0, max=1)  # TODO sigmoid early
+        return torch.tanh(cc.max()).clamp(min=0, max=1)
 
     def forward(self, z0, z1):
         return self.predict(z0, z1)
