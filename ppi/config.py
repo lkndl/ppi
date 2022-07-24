@@ -203,36 +203,6 @@ class FlatConfig(SnakeConfig):
 
 @dataclass(init=False)
 class Config(SnakeConfig):
-    """
-    io:
-        outputOverwriteFile: /mnt/project/kaindl/ppi/runs/full/fft_stdout.log
-        errorOverwriteFile:  /mnt/project/kaindl/ppi/runs/full/fft_stderr.log
-        cwd: /mnt/project/kaindl/ppi/ppi
-    limit:
-        coreLimit: 10
-        runtimeLimit: 336:00
-        memLimit: 100GB!
-    resource:
-        # gpu: num=1/task:mode=shared:gmem=32G:j_exclusive=no:gpack=yes
-        gpu: num=1:mode=exclusive_process:gmem=32G:j_exclusive=yes
-        machines: lsf-server-2
-
-    notify:
-        notifyJobDone: ""
-        notifyJobExit:
-
-    properties:
-        queueName: mid-end-normal
-        jobName:   kaindl_fft
-    command: >
-      ppi train
-      --train-tsv /mnt/project/kaindl/ppi/data/ppi_dataset/apid_train.tsv
-      --h5 /mnt/project/kaindl/ppi/data/embedding/apid_huri.h5
-      --val-tsv /mnt/project/kaindl/ppi/data/ppi_dataset/apid_validation.tsv
-      --wd /mnt/project/kaindl/ppi/runs/full/ --use-tqdm
-      --batch-size 15 --seed 42 --epochs 10 --eval_time_interval 43200
-      --architecture fft --name fft
-    """
     model_params: ModelParams
     train_params: TrainParams
     test_params: TestParams
@@ -269,6 +239,7 @@ class Config(SnakeConfig):
     def process(self, write: bool = True) -> FlatConfig:
         mode = self.out_params.mode
         name = self.out_params.name
+        self.out_params.wd = Path(self.out_params.wd)
         if not name:
             # uuids are aaaaaawfully long, so I'm doing this shit:
             c2 = json.dumps({'model_params': self.model_params.to_dict(),

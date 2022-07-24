@@ -6,8 +6,73 @@ import numpy as np
 import pandas as pd
 import secrets
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from rich.progress import Progress
+
+
+class ResumableRandomSampler(Sampler):
+    """https://gist.github.com/usamec/1b3b4dcbafad2d58faa71a9633eea6a5"""
+
+    def __init__(self, dataset: Dataset, seed: int, shuffle: bool = True):
+        super(Sampler, self).__init__()
+        self.dataset = dataset
+        self.generator = torch.Generator().manual_seed(seed)
+
+        self.shuffle = shuffle
+        self.perm_index = 0
+        self.perm = torch.randperm(self.num_samples, generator=self.generator)
+        if not self.shuffle:
+            self.perm = torch.arange(0, self.num_samples)
+
+    @property
+    def num_samples(self) -> int:
+        return len(self.dataset)
+
+    def __iter__(self):
+        if self.perm_index >= len(self.perm):
+            self.perm_index = 0
+            self.perm = torch.randperm(self.num_samples, generator=self.generator)
+            if not self.shuffle:
+                self.perm = torch.arange(0, self.num_samples)
+
+        while self.perm_index < len(self.perm):
+            self.perm_index += 1
+            yield self.perm[self.perm_index - 1]
+
+    def __len__(self):
+        return self.num_samples
+
+    def get_state(self):
+        return {'perm': self.perm, 'perm_index': self.perm_index, 'shuffle': self.shuffle,
+                'sampler_rng_state': self.generator.get_state()}
+
+    def set_state(self, state):
+        self.perm = state['perm']
+        self.perm_index = state['perm_index']
+        self.shuffle = state['shuffle']
+        self.generator.set_state(state['sampler_rng_state'])
+
+
+class PairedDataset(Dataset):
+    def __init__(self, X0, X1, Y):
+        self.X0 = X0
+        self.X1 = X1
+        self.Y = Y
+        assert len(X0) == len(X1) == len(Y), f'X0: {len(X0)} X1: {len(X1)} Y: {len(Y)}'
+
+    def __len__(self):
+        return len(self.X0)
+
+    def __getitem__(self, i):
+        return self.X0[i], self.X1[i], self.Y[i]
+
+
+def collate_paired_sequences(args):
+    """Collate function for PyTorch data loader."""
+    x0 = [a[0] for a in args]
+    x1 = [a[1] for a in args]
+    y = [a[2] for a in args]
+    return x0, x1, torch.stack(y, 0)
 
 
 def get_dataloaders_and_ids(tsv_path: Path,
@@ -17,6 +82,7 @@ def get_dataloaders_and_ids(tsv_path: Path,
                             label_column: str = 'label',
                             split_column: str = None,
                             shuffle: bool = True,
+                            seed: int = torch.randint(0, int(1e6), (1,)).item()
                             ) -> tuple[Union[DataLoader, dict[str, DataLoader]], set[str]]:
     all_pairs = pd.read_csv(tsv_path, sep='\t', header=0)
     assert len(id_columns) == 2 and set(id_columns) < set(all_pairs.columns), \
@@ -38,11 +104,12 @@ def get_dataloaders_and_ids(tsv_path: Path,
             pair_label = torch.concat((pair_label, pair_label))
 
         dataset = PairedDataset(prot_a, prot_b, pair_label)
+        sampler = ResumableRandomSampler(dataset, seed, shuffle)
         data_loader = DataLoader(
             dataset,
             batch_size=batch_size,
             collate_fn=collate_paired_sequences,
-            shuffle=shuffle,
+            sampler=sampler,
         )
         loaders[str(cclass)] = data_loader
 
@@ -105,25 +172,3 @@ def get_dataloader_and_embeddings(
     embeddings = get_embeddings(embedding_file_path, all_proteins, perprot)
 
     return pairs_dataloader, embeddings
-
-
-class PairedDataset(Dataset):
-    def __init__(self, X0, X1, Y):
-        self.X0 = X0
-        self.X1 = X1
-        self.Y = Y
-        assert len(X0) == len(X1) == len(Y), f'X0: {len(X0)} X1: {len(X1)} Y: {len(Y)}'
-
-    def __len__(self):
-        return len(self.X0)
-
-    def __getitem__(self, i):
-        return self.X0[i], self.X1[i], self.Y[i]
-
-
-def collate_paired_sequences(args):
-    """Collate function for PyTorch data loader."""
-    x0 = [a[0] for a in args]
-    x1 = [a[1] for a in args]
-    y = [a[2] for a in args]
-    return x0, x1, torch.stack(y, 0)

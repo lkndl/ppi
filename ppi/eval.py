@@ -7,6 +7,7 @@ import torch.nn as nn
 from rich.progress import Progress
 from torch.optim import Adam
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ppi.metrics import Metrics, Writer
 from train.interaction import InteractionMap
@@ -57,13 +58,15 @@ class Evaluator:
 
     def __init__(self, cfg, model: InteractionMap,
                  optim: Adam, writer: Writer,
+                 train_loader: DataLoader,
                  dataloaders: dict[str, DataLoader],
                  embeddings: dict[str, torch.Tensor],
-                 progress: Progress, n_train_batches: int):
+                 progress: Progress):
         self.cfg = cfg
         self.model = model
         self.optim = optim
         self.writer = writer
+        self.train_loader = train_loader
         self.dataloaders = dataloaders
         self.embeddings = embeddings
         self.progress = progress
@@ -71,7 +74,7 @@ class Evaluator:
             start_epoch=cfg.get('start_epoch', 0.),
             start_batch=cfg.get('start_batch', 0),
             time=cfg.eval_time_interval, epochs=cfg.eval_epoch_interval,
-            train_batches=n_train_batches,
+            train_batches=len(train_loader),
             batches=len(self) * cfg.eval_train_ratio)
         self.metrics = Metrics()
         self.results = dict()
@@ -89,10 +92,14 @@ class Evaluator:
         with torch.no_grad():
             for (cclass, dataloader), color in zip(
                     self.dataloaders.items(), ['blue', 'red', 'yellow']):
-                task = self.progress.add_task(f'[{color}]C{cclass}', total=len(dataloader))
-                task_ids.append(task)
+                if self.progress is not None:
+                    task = self.progress.add_task(f'[{color}]C{cclass}', total=len(dataloader))
+                    task_ids.append(task)
+                    tracker, tracker_kwargs = self.progress.track, dict(task_id=task)
+                else:
+                    tracker, tracker_kwargs = tqdm, dict(desc=f'C{cclass}', colour=color, leave=False)
 
-                for n0, n1, labels in self.progress.track(dataloader, task_id=task):
+                for n0, n1, labels in tracker(dataloader, **tracker_kwargs):
                     preds = list()
                     for _n0, _n1 in zip(n0, n1):
                         z_a = embeddings[_n0].to(device)
@@ -113,7 +120,8 @@ class Evaluator:
                 results[cclass] = metrics.compute()
                 metrics.reset()
 
-            [self.progress.update(task_id=task, visible=False) for task in task_ids]
+            if self.progress is not None:
+                [self.progress.update(task_id=task, visible=False) for task in task_ids]
 
             cclass_metrics = dict()
             for c, c_dict in results.items():
@@ -124,12 +132,24 @@ class Evaluator:
                                        label, v in d.items()}
             writer.add_interval(cclass_metrics, f'val', train_batch)
             self.results[train_batch] = cclass_metrics
-            # TODO keep track of best, and keep that checkpoint up-to-date
-            utils.checkpoint(self.model, self.optim, self.cfg.wd / self.cfg.name / 'chk_best.tar',
-                             batch=train_batch, eval_results=results)
+
+            # TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
+            #  do not checkpoint at every eval just for the fun of it
+            # self.checkpoint(file_name='chk_best.tar', batch=train_batch, eval_results=results)
+            self.checkpoint(file_name=f'chk_eval_{train_batch}.tar', batch=train_batch, eval_results=results)
 
         model.train()
         return False
+
+    def checkpoint(self, file_name: str, **kwargs):
+        # fetch the current dataloader states
+        d = dict(train=self.train_loader.sampler.get_state()) | \
+            {c: dl.sampler.get_state() for c, dl in self.dataloaders.items()}
+        # TODO save current patience and evaluation loss for resuming
+
+        # save the checkpoint
+        utils.checkpoint(self.model, self.optim, self.cfg.wd / self.cfg.name / file_name,
+                         dataloader_states=d, epochs=self.cfg.epochs, **kwargs)
 
     def __call__(self, batch: int = 0) -> bool:
         # check what'sin dataloaders

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import warnings
 from enum import Enum
 from pathlib import Path
@@ -158,13 +159,6 @@ def evaluate(ctx: typer.Context,
     if path.suffix == '.tar':
         checkpoint = torch.load(path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        # TODO load anything else here?
-        #  this should go to the place where we resume:
-        if rng_state := checkpoint.get('torch_rng_state'):
-            torch.set_rng_state(rng_state)
-        if rng_state := checkpoint.get('numpy_rng_state'):
-            np.random.set_state(rng_state)
-
     elif path.suffix == '.pth':
         model.load_state_dict(torch.load(path))
     else:
@@ -190,15 +184,32 @@ def evaluate(ctx: typer.Context,
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
+def resume(ctx: typer.Context,
+           config: Path = typer.Option(None),
+           checkpoint: Path = typer.Option(None),
+           epochs: int = typer.Option(2),
+           patience: int = typer.Option(200),
+           use_tqdm: bool = typer.Option(True),
+           ):
+    cfg = parse(ctx)
+    print(f'using device: {device}')
+    checkpoint = torch.load(checkpoint, map_location=device)
+    train_loop(cfg, use_tqdm, checkpoint)
+
+
+@app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def train(ctx: typer.Context,
-          use_tqdm: bool = typer.Option(False),
           train_tsv: Path = typer.Option(None),
           h5: Path = typer.Option(None),
           epochs: int = typer.Option(2),
+          use_tqdm: bool = typer.Option(True),
           ) -> None:
     cfg = parse(ctx)
     print(f'using device: {device}')
+    train_loop(cfg, use_tqdm=use_tqdm)
 
+
+def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
     writer = Writer(log_dir=cfg.wd / 'tboard' / cfg.name, flush_secs=10)
     writer.add_text(cfg.name, str(cfg))
     # layout = {
@@ -212,30 +223,33 @@ def train(ctx: typer.Context,
     # writer.add_custom_scalars(layout)
     writer.flush()
 
-    epoch_progress = Progress(
-        TextColumn('[bold blue]epoch {task.completed}/{task.total}'),
-        BarColumn(), TimeElapsedColumn())
-    batch_progress = Progress(
-        TextColumn('batch {task.completed}/{task.total}'),
-        BarColumn(), TaskProgressColumn(justify='right', show_speed=True))
-    cclass_progress = Progress(
-        TextColumn('{task.description} {task.completed}/{task.total}'), BarColumn())
-    progress_group = rich.console.Group(
-        epoch_progress, batch_progress, cclass_progress)
-    epoch_task_id = epoch_progress.add_task('train', total=epochs)
-
     # toggle between using rich or not
     if use_tqdm:
         _print = print
-        epoch_tracker, batch_tracker = tqdm, tqdm
+        epoch_tracker, batch_tracker, cclass_progress = tqdm, tqdm, None
         e_kwargs, b_kwargs = dict(desc='epoch', colour='green'), \
                              dict(desc='batch', position=0, leave=False)
+        cm = contextlib.nullcontext()
     else:
+        epoch_progress = Progress(
+            TextColumn('[bold blue]epoch {task.completed}/{task.total}'),
+            BarColumn(), TimeElapsedColumn())
+        batch_progress = Progress(
+            TextColumn('batch {task.completed}/{task.total}'),
+            BarColumn(), TaskProgressColumn(justify='right', show_speed=True))
+        cclass_progress = Progress(
+            TextColumn('{task.description} {task.completed}/{task.total}'), BarColumn())
+        progress_group = rich.console.Group(
+            epoch_progress, batch_progress, cclass_progress)
+        epoch_task_id = epoch_progress.add_task('train', total=cfg.epochs)
+
         _print = epoch_progress.console.print
         epoch_tracker, batch_tracker = epoch_progress.track, batch_progress.track
         e_kwargs, b_kwargs = dict(task_id=epoch_task_id), dict()
+        cm = rich.live.Live(progress_group)
 
-    with rich.live.Live(progress_group) as live:
+    with cm as live:
+        batch, epoch, finished = 0, 0, False
 
         model = InteractionMap(**vars(cfg))
         params = [p for p in model.parameters() if p.requires_grad]
@@ -244,20 +258,33 @@ def train(ctx: typer.Context,
         _print('model loaded')
 
         dataloader, seq_ids = get_dataloaders_and_ids(
-            cfg.train_tsv, cfg.batch_size, augment=cfg.augment, shuffle=cfg.shuffle)
+            cfg.train_tsv, cfg.batch_size, augment=cfg.augment,
+            shuffle=cfg.shuffle, seed=cfg.seed)
         val_loaders, val_seq_ids = get_dataloaders_and_ids(
-            cfg.val_tsv, cfg.batch_size, augment=cfg.augment, shuffle=cfg.shuffle,
-            split_column='cclass')
+            cfg.val_tsv, cfg.batch_size, augment=cfg.augment,
+            shuffle=cfg.shuffle, seed=cfg.seed, split_column='cclass')
         embeddings = get_embeddings(cfg.h5, seq_ids | val_seq_ids)
         _print('data loaded')
 
+        if checkpoint is not None:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optim.load_state_dict(checkpoint['optim_state_dict'])
+            torch.set_rng_state(checkpoint['torch_rng_state'])
+            np.random.set_state(checkpoint['numpy_rng_state'])
+            dataloader_states = checkpoint['dataloader_states']
+            dataloader.sampler.set_state(dataloader_states.pop('train'))
+            for cclass in val_loaders:
+                val_loaders[cclass].sampler.set_state(dataloader_states[cclass])
+            batch = checkpoint['batch']
+            epoch = int(batch / len(dataloader))
+            _print('checkpoint loaded')
+
         metrics = Metrics()
-        evaluator = Evaluator(cfg, model, optim, writer, val_loaders,
-                              embeddings, cclass_progress, len(dataloader))
+        evaluator = Evaluator(cfg, model, optim, writer, dataloader,
+                              val_loaders, embeddings, cclass_progress)
         if not use_tqdm:
             epoch_progress.advance(epoch_task_id)
-        batch, finished = 0, False
-        for epoch in epoch_tracker(range(cfg.epochs), **e_kwargs):
+        for epoch in epoch_tracker(range(epoch, cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
 
@@ -296,23 +323,25 @@ def train(ctx: typer.Context,
                 optim.zero_grad()
                 batch += 1
 
-                if reason := evaluator.interval(batch=batch):
-                    finished = evaluator.evaluate_model(batch)
-                    if finished:
+                if eval_reason := evaluator.interval(batch=batch):
+                    if finished := evaluator.evaluate_model(batch):
                         break
 
             if not use_tqdm:
                 batch_progress.update(batch_task_id, visible=False)
-            epoch_metrics = metrics.compute()
-            writer.add_interval(epoch_metrics, 'epoch', epoch + 1)
-            metrics.reset()
-            utils.checkpoint(model, optim, cfg.wd / cfg.name / f'chk_{epoch}.tar',
-                             batch=batch, epoch=epoch, epochs=cfg.epochs)
             if finished:
                 break
 
-        if not finished:
-            _print('')
+            epoch_metrics = metrics.compute()
+            writer.add_interval(epoch_metrics, 'epoch', epoch + 1)
+            metrics.reset()
+            evaluator.checkpoint(file_name=f'chk_{epoch}.tar', batch=batch,
+                                 epoch=epoch, epoch_metrics=epoch_metrics)
+
+        if finished:
+            utils.publish(cfg.wd / cfg.name / 'chk_best.tar', InteractionMap(**vars(cfg)),
+                          cfg.wd / cfg.name / f'chk_best_{batch}.pth')
+            _print(f'stopped training after epoch {epoch + 1} batch {batch}')
 
         writer.close()
 

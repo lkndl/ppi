@@ -59,8 +59,7 @@ def checkpoint(model: nn.Module, optim: Adam,
 
 
 def publish(checkpoint_file: Union[str, Path],
-            cls: nn.Module, path: Union[str, Path]) -> None:
-    model = cls()
+            model: nn.Module, path: Union[str, Path]) -> None:
     model.load_state_dict(torch.load(checkpoint_file)['model_state_dict'])
     torch.save(model, Path(path).with_suffix('.pth'))
 
