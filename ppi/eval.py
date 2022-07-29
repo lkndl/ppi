@@ -12,8 +12,7 @@ from tqdm import tqdm
 from ppi.metrics import Metrics, Writer
 from train.interaction import InteractionMap
 from utils import general_utils as utils
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from utils.general_utils import device
 
 
 class Intervalometer:
@@ -37,7 +36,7 @@ class Intervalometer:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def __call__(self, batch: int = 0) -> bool:
+    def __call__(self, batch: int) -> bool:
         epoch = (batch - self.start_batch) / self.train_batches + self.start_epoch
         do_it_now = False
         if epoch and epoch - self.start_epoch > self.epochs:
@@ -115,7 +114,7 @@ class Evaluator:
                     loss = nn.BCELoss(weight=w)(preds, labels)
 
                     # update the metrics with this batch
-                    metrics(preds, labels, loss)
+                    metrics(preds, labels, loss, keep_all=True)
 
                 results[cclass] = metrics.compute()
                 metrics.reset()
@@ -123,15 +122,9 @@ class Evaluator:
             if self.progress is not None:
                 [self.progress.update(task_id=task, visible=False) for task in task_ids]
 
-            cclass_metrics = dict()
-            for c, c_dict in results.items():
-                for metric, value in c_dict.items():
-                    cclass_metrics[metric] = cclass_metrics.get(metric, dict()) | {f'C{c}': value}
-            cclass_metrics['p_hat'] = {f'{cclass}_{label}': v for cclass, d in
-                                       cclass_metrics['p_hat'].items() for
-                                       label, v in d.items()}
+            cclass_metrics = Metrics.pivot(results)
             writer.add_interval(cclass_metrics, f'val', train_batch)
-            self.results[train_batch] = cclass_metrics
+            self.results[train_batch] = cclass_metrics  # TODO don't save everything
 
             # TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
             #  do not checkpoint at every eval just for the fun of it
@@ -139,6 +132,7 @@ class Evaluator:
             self.checkpoint(file_name=f'chk_eval_{train_batch}.tar', batch=train_batch, eval_results=results)
 
         model.train()
+        self.interval.restart()  # do not include eval duration in train time interval
         return False
 
     def checkpoint(self, file_name: str, **kwargs):
@@ -149,7 +143,8 @@ class Evaluator:
 
         # save the checkpoint
         utils.checkpoint(self.model, self.optim, self.cfg.wd / self.cfg.name / file_name,
-                         dataloader_states=d, epochs=self.cfg.epochs, **kwargs)
+                         dataloader_states=d, metrics_state=self.metrics.get_state(),
+                         epochs=self.cfg.epochs, **kwargs)
 
     def __call__(self, batch: int = 0) -> bool:
         # check what'sin dataloaders

@@ -3,8 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.cuda.amp import custom_bwd, custom_fwd
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from utils.general_utils import device
 
 
 class EmbeddingsProjection(nn.Module):

@@ -31,6 +31,7 @@ from ppi.config import parse
 
 from train.interaction import InteractionMap
 from utils import general_utils as utils
+from utils.general_utils import device
 from utils.dataloader import (
     DataLoader,
     get_dataloaders_and_ids,
@@ -38,8 +39,6 @@ from utils.dataloader import (
 )
 
 __version__ = pkg_resources.get_distribution('ppi').version
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 app = typer.Typer()
 
@@ -174,7 +173,7 @@ def evaluate(ctx: typer.Context,
     for (cclass, dataloader), m in zip(dataloaders.items(), list('waa')):
         preds, labels = predict(model, dataloader, embeddings,
                                 mode=WriteMode(m), cclass=cclass)
-        vals = metrics(preds, labels, nn.BCELoss()(preds, labels.float()))
+        vals = metrics(preds, labels, nn.BCELoss()(preds, labels.float()), keep_all=True)
         vals.pop('p_hat')
         if not lines:
             lines.append(f'cclass\t' + '\t'.join([f'{k:>7}' for k in vals.keys()]))
@@ -266,10 +265,14 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         embeddings = get_embeddings(cfg.h5, seq_ids | val_seq_ids)
         _print('data loaded')
 
+        metrics = Metrics()
+        evaluator = Evaluator(cfg, model, optim, writer, dataloader,
+                              val_loaders, embeddings, cclass_progress)
+
         if checkpoint is not None:
             model.load_state_dict(checkpoint['model_state_dict'])
             optim.load_state_dict(checkpoint['optim_state_dict'])
-            torch.set_rng_state(checkpoint['torch_rng_state'])
+            torch.set_rng_state(checkpoint['torch_rng_state'].cpu())
             np.random.set_state(checkpoint['numpy_rng_state'])
             dataloader_states = checkpoint['dataloader_states']
             dataloader.sampler.set_state(dataloader_states.pop('train'))
@@ -277,22 +280,24 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 val_loaders[cclass].sampler.set_state(dataloader_states[cclass])
             batch = checkpoint['batch']
             epoch = int(batch / len(dataloader))
+            metrics.load_state(checkpoint.get('metrics_state'))
             _print('checkpoint loaded')
 
-        metrics = Metrics()
-        evaluator = Evaluator(cfg, model, optim, writer, dataloader,
-                              val_loaders, embeddings, cclass_progress)
         if not use_tqdm:
             epoch_progress.advance(epoch_task_id)
+        if batch == 0:
+            _print('eval untrained model')
+            evaluator.evaluate_model(batch)
         for epoch in epoch_tracker(range(epoch, cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
 
-            if not use_tqdm:
-                batch_task_id = batch_progress.add_task('', total=len(dataloader))
-                b_kwargs = dict(task_id=batch_task_id)
+            if use_tqdm:
+                b_kwargs |= dict(desc=f'epoch {epoch + 1}/{cfg.epochs}',
+                                 total=len(dataloader), initial=batch % len(dataloader))
             else:
-                b_kwargs.update(desc=f'epoch {epoch + 1}/{cfg.epochs}')
+                batch_task_id = batch_progress.add_task('', total=len(dataloader) - batch % len(dataloader))
+                b_kwargs |= dict(task_id=batch_task_id)
 
             # i = 0
             for n0, n1, labels in batch_tracker(dataloader, **b_kwargs):

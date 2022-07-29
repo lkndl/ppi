@@ -4,10 +4,12 @@ from typing import Union
 
 import torch
 import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import numpy as np
 import torchmetrics as tm
 from torch.utils.tensorboard import SummaryWriter
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from utils.general_utils import device
 
 
 class Metrics:
@@ -16,6 +18,7 @@ class Metrics:
     re: tm.Recall
     f1: tm.F1Score
     aupr: tm.AveragePrecision
+    prc: tm.PrecisionRecallCurve
     loss: tm.MeanMetric
     p0: tm.MeanMetric
     p1: tm.MeanMetric
@@ -25,12 +28,14 @@ class Metrics:
     def __init__(self):
         for name, cls in zip(
                 ['acc', 'pr', 're', 'f1',
-                 'aupr', 'loss', 'p0', 'p1', 'mcc'],
+                 'aupr', 'prc', 'loss', 'p0', 'p1', 'mcc'],
                 [tm.Accuracy, tm.Precision, tm.Recall, tm.F1Score,
-                 tm.AveragePrecision, *[tm.MeanMetric] * 3]):
+                 tm.AveragePrecision, tm.PrecisionRecallCurve, *[tm.MeanMetric] * 3]):
             setattr(self, name, cls().to(device))
         self.mcc = tm.MatthewsCorrCoef(2).to(device)
         self.conf = tm.ConfusionMatrix(2).to(device)
+        for _, metric in self:
+            metric.persistent(True)
 
     def __iter__(self):
         for name, metric in vars(self).items():
@@ -40,6 +45,15 @@ class Metrics:
         for _, metric in self:
             metric.reset()
 
+    def load_state(self, state: dict = None):
+        if state is None:
+            return
+        for name, state_dict in state.items():
+            getattr(self, name).load_state_dict(state_dict)
+
+    def get_state(self) -> dict[str, dict]:
+        return {name: metric.state_dict() for name, metric in self}
+
     def compute(self):
         d = dict()
         for name, metric in self:
@@ -48,7 +62,8 @@ class Metrics:
         return d
 
     def __call__(self, preds: torch.Tensor, labels: torch.Tensor,
-                 loss: Union[None, torch.Tensor] = None) -> dict[str, float]:
+                 loss: Union[None, torch.Tensor] = None,
+                 keep_all: bool = False) -> dict[str, float]:
         d = dict()
         for name, metric in self:
             if type(metric) != tm.MeanMetric:
@@ -63,10 +78,23 @@ class Metrics:
             pd[str(i)] = metric(t)
         if pd:
             d['p_hat'] = pd
-        if torch.isnan(d['aupr']):
+        if 'aupr' in d and torch.isnan(d['aupr']) and not keep_all:
             d.pop('aupr')
-        d.pop('conf')
+        if not keep_all:
+            d.pop('conf')
+            d.pop('prc')
         return d
+
+    @staticmethod
+    def pivot(cclass_metrics: dict[str, dict]) -> dict[str, dict]:
+        """Transform a {C1,C2,C3} -> {ACC, MCC, ...} dict of results to {ACC, ...} -> {C1: ..., C2: }"""
+        m = dict()
+        for c, c_dict in cclass_metrics.items():
+            for metric, value in c_dict.items():
+                m[metric] = m.get(metric, dict()) | {f'C{c}': value}
+        m['p_hat'] = {f'{cclass}_{label}': v for cclass, d in m['p_hat'].items()
+                      for label, v in d.items()}
+        return m
 
 
 class Writer(SummaryWriter):
@@ -89,6 +117,37 @@ class Writer(SummaryWriter):
                 ax.set(xticks=[0, 1], yticks=[0, 1])
             fig.tight_layout()
             self.add_figure(f'conf/{interval}', fig, idx)
+        d.pop('conf', None)
+
+        if (prc := d.pop('prc', None)) is not None:
+            if type(prc) == dict:
+                dfs = list()
+                for cclass, ts in prc.items():
+                    df = pd.DataFrame(t.cpu().numpy() for t in ts).T
+                    df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
+                    df['cclass'] = cclass
+                    dfs.append(df)
+                df = pd.concat(dfs).reset_index()
+            else:
+                df = pd.DataFrame(t.cpu().numpy() for t in prc).T
+                df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
+                df['cclass'] = 'train'
+
+            plt.style.use('default')
+            sns.set_theme()
+            fig = sns.relplot(kind='line',
+                              data=df,
+                              x='recall', y='precision',
+                              hue='cclass',
+                              aspect=1, height=2.8,
+                              ci=None, drawstyle='steps-post')
+            t = [0, .25, .5, .75, 1]
+            tl = ['0', '.25', '.5', '.75', '1']
+            fig.set(xlabel='recall', ylabel='precision', box_aspect=1,
+                    xticks=t, yticks=t, xticklabels=tl, yticklabels=tl)
+            fig.tight_layout()
+            self.add_figure(f'prc/{interval}', fig.fig, idx)
+        d.pop('prc', None)
 
         for k, v in d.items():
             if type(v) != dict:

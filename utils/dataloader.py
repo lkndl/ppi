@@ -44,13 +44,13 @@ class ResumableRandomSampler(Sampler):
 
     def get_state(self):
         return {'perm': self.perm, 'perm_index': self.perm_index, 'shuffle': self.shuffle,
-                'sampler_rng_state': self.generator.get_state()}
+                'sampler_rng_state': self.generator.get_state().cpu()}
 
     def set_state(self, state):
         self.perm = state['perm']
         self.perm_index = state['perm_index']
         self.shuffle = state['shuffle']
-        self.generator.set_state(state['sampler_rng_state'])
+        self.generator.set_state(state['sampler_rng_state'].cpu())
 
 
 class PairedDataset(Dataset):
