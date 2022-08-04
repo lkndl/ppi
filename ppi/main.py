@@ -327,6 +327,7 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 optim.step()
                 optim.zero_grad()
                 batch += 1
+                del loss, batch_metrics, preds, labels
 
                 if eval_reason := evaluator.interval(batch=batch):
                     if finished := evaluator.evaluate_model(batch):

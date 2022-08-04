@@ -126,6 +126,7 @@ class Evaluator:
             writer.add_interval(cclass_metrics, f'val', train_batch)
             self.results[train_batch] = cclass_metrics  # TODO don't save everything
 
+            writer.flush()
             # TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
             #  do not checkpoint at every eval just for the fun of it
             # self.checkpoint(file_name='chk_best.tar', batch=train_batch, eval_results=results)

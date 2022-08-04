@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import gc
 from typing import Union
 
-import torch
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
-import numpy as np
+import seaborn as sns
+import torch
 import torchmetrics as tm
 from torch.utils.tensorboard import SummaryWriter
+
 from utils.general_utils import device
 
 
@@ -44,6 +45,7 @@ class Metrics:
     def reset(self):
         for _, metric in self:
             metric.reset()
+        gc.collect()
 
     def load_state(self, state: dict = None):
         if state is None:
