@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -45,7 +44,6 @@ class Metrics:
     def reset(self):
         for _, metric in self:
             metric.reset()
-        gc.collect()
 
     def load_state(self, state: dict = None):
         if state is None:
@@ -67,11 +65,12 @@ class Metrics:
                  loss: Union[None, torch.Tensor] = None,
                  keep_all: bool = False) -> dict[str, float]:
         d = dict()
+        preds = preds.clone().detach()
         for name, metric in self:
             if type(metric) != tm.MeanMetric:
                 d[name] = metric(preds, labels.int())
         if loss is not None:
-            d['loss'] = self.loss(loss)
+            d['loss'] = self.loss(loss.clone().detach())
         pd = dict()
         for i, metric in enumerate([self.p0, self.p1]):
             t = preds[labels == i]
@@ -105,18 +104,33 @@ class Writer(SummaryWriter):
         super(Writer, self).__init__(*args, **kwargs)
 
     def add_interval(self, d: dict, interval: str, idx: int):
+        plt.style.use('default')
         if (conf := d.pop('conf', None)) is not None:
             if type(conf) == dict:
-                fig, axes = plt.subplots(1, 3, figsize=(3, 1),
+                fig, axes = plt.subplots(1, 3, figsize=(5.4, 1.8),
                                          sharey=True, sharex=True)
                 for i, ax in enumerate(axes):
                     c = f'C{i + 1}'
-                    ax.imshow(conf[c].cpu())
+                    cm = conf[c].cpu().float()
+                    cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
+                    ax.imshow(cm, cmap='gray_r')
                     ax.set(title=c, xticks=[0, 1], yticks=[0, 1])
+                    for y in [0, 1]:
+                        for x in [0, 1]:
+                            c = cm[y, x]
+                            ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
+                    if not i:
+                        ax.set(xlabel='prediction', ylabel='label')
             else:
-                fig, ax = plt.subplots(1, 1, figsize=(1, 1))
-                ax.imshow(conf.cpu())
-                ax.set(xticks=[0, 1], yticks=[0, 1])
+                fig, ax = plt.subplots(1, 1, figsize=(1.8, 1.8))
+                cm = conf.cpu().float()
+                cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
+                ax.imshow(cm, cmap='gray_r')
+                ax.set(xticks=[0, 1], yticks=[0, 1], xlabel='prediction', ylabel='label')
+                for y in [0, 1]:
+                    for x in [0, 1]:
+                        c = cm[y, x]
+                        ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
             fig.tight_layout()
             self.add_figure(f'conf/{interval}', fig, idx)
         d.pop('conf', None)
@@ -146,6 +160,7 @@ class Writer(SummaryWriter):
             t = [0, .25, .5, .75, 1]
             tl = ['0', '.25', '.5', '.75', '1']
             fig.set(xlabel='recall', ylabel='precision', box_aspect=1,
+                    xlim=(-.1, 1.1), ylim=(-.1, 1.1),
                     xticks=t, yticks=t, xticklabels=tl, yticklabels=tl)
             fig.tight_layout()
             self.add_figure(f'prc/{interval}', fig.fig, idx)

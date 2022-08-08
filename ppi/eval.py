@@ -124,7 +124,7 @@ class Evaluator:
 
             cclass_metrics = Metrics.pivot(results)
             writer.add_interval(cclass_metrics, f'val', train_batch)
-            self.results[train_batch] = cclass_metrics  # TODO don't save everything
+            # self.results[train_batch] = cclass_metrics  # TODO don't save everything
 
             writer.flush()
             # TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
