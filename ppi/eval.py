@@ -15,6 +15,9 @@ from utils import general_utils as utils
 from utils.general_utils import device
 
 
+# TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
+#  do not checkpoint at every eval just for the fun of it
+
 class Intervalometer:
     start_time: int
     start_epoch: float = 0.
@@ -26,10 +29,17 @@ class Intervalometer:
     epochs: float = 2.
     batches: int = 100  # evaluate once every x train batches
 
-    def __init__(self, **kwargs):
-        self.start_time = int(perf_counter())
+    def __init__(self, cfg, train_loader: DataLoader,
+                 dataloaders: dict[str, DataLoader], **kwargs):
+        self.start_epoch = cfg.get('start_epoch', 0.)
+        self.start_batch = cfg.get('start_batch', 0)
+        self.time = cfg.eval_time_interval
+        self.epochs = cfg.eval_epoch_interval
+        self.train_batches = len(train_loader)
+        self.batches = cfg.eval_train_ratio * sum([len(loader) for loader in dataloaders.values()])
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.start_time = int(perf_counter())
 
     def restart(self, **kwargs):
         self.start_time = int(perf_counter())
@@ -55,12 +65,15 @@ class Evaluator:
     impatience: int = 0
     patience: int = 20
 
-    def __init__(self, cfg, model: InteractionMap,
-                 optim: Adam, writer: Writer,
-                 train_loader: DataLoader,
-                 dataloaders: dict[str, DataLoader],
-                 embeddings: dict[str, torch.Tensor],
-                 progress: Progress):
+    def __init__(self, cfg, model: InteractionMap = None,
+                 optim: Adam = None, writer: Writer = None,
+                 train_loader: DataLoader = None,
+                 dataloaders: dict[str, DataLoader] = None,
+                 embeddings: dict[str, torch.Tensor] = None,
+                 progress: Progress = None,
+                 intervalometer: Intervalometer = None,
+                 metrics: Metrics = None,
+                 ):
         self.cfg = cfg
         self.model = model
         self.optim = optim
@@ -69,101 +82,75 @@ class Evaluator:
         self.dataloaders = dataloaders
         self.embeddings = embeddings
         self.progress = progress
-        self.interval = Intervalometer(
-            start_epoch=cfg.get('start_epoch', 0.),
-            start_batch=cfg.get('start_batch', 0),
-            time=cfg.eval_time_interval, epochs=cfg.eval_epoch_interval,
-            train_batches=len(train_loader),
-            batches=len(self) * cfg.eval_train_ratio)
-        self.metrics = Metrics()
-        self.results = dict()
+        self.intervalometer = intervalometer
+        self.metrics = metrics
 
     def __len__(self):
         return sum([len(loader) for loader in self.dataloaders.values()])
 
-    def evaluate_model(self, train_batch: int = 0):
-        model, embeddings, writer, metrics = \
-            self.model, self.embeddings, self.writer, self.metrics
-        results = dict()
-        task_ids = list()
-
-        model.eval()
-        with torch.no_grad():
-            for (cclass, dataloader), color in zip(
-                    self.dataloaders.items(), ['blue', 'red', 'yellow']):
-                if self.progress is not None:
-                    task = self.progress.add_task(f'[{color}]C{cclass}', total=len(dataloader))
-                    task_ids.append(task)
-                    tracker, tracker_kwargs = self.progress.track, dict(task_id=task)
-                else:
-                    tracker, tracker_kwargs = tqdm, dict(desc=f'C{cclass}', colour=color, leave=False)
-
-                for n0, n1, labels in tracker(dataloader, **tracker_kwargs):
-                    preds = list()
-                    for _n0, _n1 in zip(n0, n1):
-                        z_a = embeddings[_n0].to(device)
-                        z_b = embeddings[_n1].to(device)
-
-                        p_hat = model.predict_func(z_a, z_b)
-                        preds.append(p_hat.flatten(0))
-
-                    preds = torch.cat(preds).to(device)
-                    labels = labels.float().to(device)
-
-                    w = 1 + labels * (self.cfg.ppi_weight - 1)
-                    loss = nn.BCELoss(weight=w)(preds, labels)
-
-                    # update the metrics with this batch
-                    metrics(preds, labels, loss, keep_all=True)
-
-                results[cclass] = metrics.compute()
-                metrics.reset()
-
-            if self.progress is not None:
-                [self.progress.update(task_id=task, visible=False) for task in task_ids]
-
-            cclass_metrics = Metrics.pivot(results)
-            writer.add_interval(cclass_metrics, f'val', train_batch)
-            # self.results[train_batch] = cclass_metrics  # TODO don't save everything
-
-            writer.flush()
-            # TODO keep track of best checkpoint, and keep that checkpoint up-to-date.
-            #  do not checkpoint at every eval just for the fun of it
-            # self.checkpoint(file_name='chk_best.tar', batch=train_batch, eval_results=results)
-            self.checkpoint(file_name=f'chk_eval_{train_batch}.tar', batch=train_batch, eval_results=results)
-
-        model.train()
-        self.interval.restart()  # do not include eval duration in train time interval
-        return False
+    def __call__(self, train_batch: int = 0):
+        finished, results, times = evaluate_model(
+            self.model, self.embeddings, self.dataloaders, progress=self.progress)
+        self.writer.add_interval(self.writer.pivot(results), 'val', train_batch)
+        self.writer.flush()
+        self.checkpoint(file_name=f'chk_eval_{train_batch}.tar', batch=train_batch,
+                        eval_results=results, cfg=self.cfg.to_dict())
+        self.intervalometer.restart()
+        self.model.train()
+        return finished
 
     def checkpoint(self, file_name: str, **kwargs):
         # fetch the current dataloader states
         d = dict(train=self.train_loader.sampler.get_state()) | \
             {c: dl.sampler.get_state() for c, dl in self.dataloaders.items()}
-        # TODO save current patience and evaluation loss for resuming
-
         # save the checkpoint
         utils.checkpoint(self.model, self.optim, self.cfg.wd / self.cfg.name / file_name,
                          dataloader_states=d, metrics_state=self.metrics.get_state(),
                          epochs=self.cfg.epochs, **kwargs)
 
-    def __call__(self, batch: int = 0) -> bool:
-        # check what'sin dataloaders
 
-        # test all three classes
+def evaluate_model(model, embeddings, dataloaders,
+                   bootstraps: int = 0, progress: Progress = None
+                   ) -> tuple[bool, dict, dict]:
+    results = dict()
+    task_ids = list()
+    times = dict()
 
-        # write to the tensorboard
+    model.eval()
+    with torch.no_grad():
+        for (cclass, dataloader), color in zip(dataloaders.items(), ['blue', 'red', 'yellow']):
 
-        # if this is so far the best: save the state dict
-        # (or even the checkpoint?)
+            if progress is not None:
+                task = progress.add_task(f'[{color}]C{cclass}', total=len(dataloader))
+                task_ids.append(task)
+                tracker, tracker_kwargs = progress.track, dict(task_id=task)
+            else:
+                tracker, tracker_kwargs = tqdm, dict(desc=f'C{cclass}', colour=color, leave=False)
 
-        # if this is not the best: become impatient
+            metrics = Metrics(bootstraps)
+            start_time = perf_counter()
+            for n0, n1, labels in tracker(dataloader, **tracker_kwargs):
+                preds = list()
+                for _n0, _n1 in zip(n0, n1):
+                    z_a = embeddings[_n0].to(device)
+                    z_b = embeddings[_n1].to(device)
 
-        # if this is not the best and we're fresh out of patience:
-        # publish previous best as state dict or checkpoint
+                    p_hat = model.predict_func(z_a, z_b)
+                    preds.append(p_hat.flatten(0))
 
-        self.impatience += 1
-        if self.impatience >= self.patience:
-            return True
+                preds = torch.cat(preds).to(device)
+                labels = labels.float().to(device)
 
-        return False
+                w = 1 + labels * (model.ppi_weight - 1)
+                loss = nn.BCELoss(weight=w)(preds, labels)
+
+                metrics(preds, labels, loss, keep_all=True)
+
+            times[cclass] = (perf_counter() - start_time) / len(dataloader)
+            results[cclass] = metrics.compute()
+            del metrics
+
+        if progress is not None:
+            [progress.update(task_id=task, visible=False) for task in task_ids]
+
+    return False, results, times

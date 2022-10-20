@@ -1,8 +1,7 @@
 import numpy as np
-
 import torch
 import torch.nn as nn
-from torch.cuda.amp import custom_bwd, custom_fwd
+
 from utils.general_utils import device
 
 
@@ -105,17 +104,16 @@ class IMapCNN(nn.Module):
     def __init__(self):
         super(IMapCNN, self).__init__()
         # 1 input image channel, 6 output channels, 5x5 square convolution kernel
-        self.conv1 = nn.Conv2d(1, 6, 5)
-        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.conv1 = nn.Conv2d(1, 3, 5)   # 1, 6, 5 on server
+        self.conv2 = nn.Conv2d(3, 8, 5)  # 6, 16, 5 on server
         # change receptive field via stride + dilation
         # an affine operation: y = Wx + b
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # 5*5 from image dimension
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 1)
+        self.fc1 = nn.Linear(8 * 5 * 5, 60)  # 5*5 from image dimension  # 16 ... 120 on server
+        self.fc2 = nn.Linear(60, 1)  # 120, 84 on server
+        # self.fc3 = nn.Linear(84, 1)  # on on server
 
     def forward(self, x):
         # Max pooling over a (2, 2) window
-        # x = torch.sigmoid(x)  # TODO remove
         x = torch.max_pool2d(torch.relu(self.conv1(x)), (2, 2))
         # If the size is a square, you can specify with a single number
         x = torch.max_pool2d(torch.relu(self.conv2(x)), 2)
@@ -123,38 +121,28 @@ class IMapCNN(nn.Module):
         x = torch.nn.functional.adaptive_avg_pool2d(x, 5)  # for fixed-size, square output
         x = torch.flatten(x, 1)  # flatten all dimensions except the batch dimension
         x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.sigmoid(self.fc3(x))
-        # x = torch.clamp(x, min=0, max=1)
+        x = torch.sigmoid(self.fc2(x))  # relu on server
+        # x = torch.sigmoid(self.fc3(x))  # on on server
         return x
 
 
-class DifferentiableClamp(torch.autograd.Function):
-    """
-    https://discuss.pytorch.org/t/exluding-torch-clamp-from-backpropagation-as-tf-stop-gradient-in-tensorflow/52404/6
-    In the forward pass this operation behaves like torch.clamp.
-    But in the backward pass its gradient is 1 everywhere, as if instead of clamp one had used the identity function.
-    """
+class MultiheadAttention(nn.Module):
 
-    @staticmethod
-    @custom_fwd
-    def forward(ctx, input, min, max):
-        return input.clamp(min=min, max=max)
+    def __init__(self, embed_dim: int = 100,
+                 dropout: float = .1):
+        super().__init__()
+        self.embed = EmbeddingsProjection(nout=embed_dim)
+        self.multihead_attn = nn.MultiheadAttention(
+            2 * embed_dim, num_heads=embed_dim, dropout=dropout)
 
-    @staticmethod
-    @custom_bwd
-    def backward(ctx, grad_output):
-        return grad_output.clone(), None, None
+    def predict(self, z0, z1):
+        return self.forward(z0, z1)
 
+    def forward(self, z0, z1):
+        e0 = self.embed(z0)
+        e1 = self.embed(z1)
 
-def dclamp(input, min, max):
-    """
-    Like torch.clamp, but with a constant 1-gradient.
-    :param input: The input that is to be clamped.
-    :param min: The minimum value of the output.
-    :param max: The maximum value of the output.
-    """
-    return DifferentiableClamp.apply(input, min, max)
+        # TODO
 
 
 class InteractionMap(nn.Module):
@@ -171,6 +159,7 @@ class InteractionMap(nn.Module):
             activation=nn.GELU(),
             use_w=False,
             architecture='cnn',
+            ppi_weight: float = 10.,
             **kwargs
     ):
         super(InteractionMap, self).__init__()
@@ -185,6 +174,7 @@ class InteractionMap(nn.Module):
         self.cmap_cnn = IMapCNN()
         self.predict_func = dict(cnn=self.cnn_predict, gelu=self.gelu_predict,
                                  fft=self.fft_predict, cmap=self.cmap_predict)[architecture]
+        self.ppi_weight = ppi_weight
 
     def embed(self, z):
         return self.embedding(z)
@@ -215,7 +205,6 @@ class InteractionMap(nn.Module):
         # gradients might vanish!
         # combining a GELU with a sigmoid or max() is BS
         C = self.cpred(z0, z1)
-        # torch.nn.functional.mish() # TODO incomplete!!
         yhat = torch.nn.functional.gelu(C)
         return torch.tanh(yhat.mean()).clamp(min=0, max=1)
 
@@ -225,12 +214,11 @@ class InteractionMap(nn.Module):
 
     def cmap_predict(self, z0, z1):
         C = self.cpred(z0, z1)
-        return torch.sigmoid(C.max())
+        # return torch.sigmoid(C.max())
+        return torch.tanh(C.max()).clamp(min=0, max=1)
 
     def fft_predict(self, z0, z1):
         C = self.cpred(z0, z1)
-        # # map logits to [0, 1]
-        # C = torch.sigmoid(C)  # TODO sigmoid early
         # map real-valued, 2D input to the frequency domain
         f1 = torch.fft.rfft2(C[0, 0])
         f1[0, 0] = 0  # this is the average power. We use it to "level" the psd
@@ -241,8 +229,7 @@ class InteractionMap(nn.Module):
             f[(lower < f) & (f < upper)] = 0
         # map back to the attention domain
         cc = torch.fft.irfft2(f1)
-        # # pick and limit the max
-        # return cc.max().clamp(min=0, max=1)  # TODO sigmoid early
+        # pick and limit the max
         return torch.tanh(cc.max()).clamp(min=0, max=1)
 
     def forward(self, z0, z1):

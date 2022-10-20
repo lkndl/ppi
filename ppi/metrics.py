@@ -7,35 +7,59 @@ import pandas as pd
 import seaborn as sns
 import torch
 import torchmetrics as tm
+import torchmetrics.classification as tmc
 from torch.utils.tensorboard import SummaryWriter
 
 from utils.general_utils import device
 
 
 class Metrics:
-    acc: tm.Accuracy
-    pr: tm.Precision
-    re: tm.Recall
-    f1: tm.F1Score
-    aupr: tm.AveragePrecision
-    prc: tm.PrecisionRecallCurve
+    class _prc(tmc.BinaryPrecisionRecallCurve):
+        """This returns a tuple, which we can't easily stack -> Tensorify"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, thresholds=100, **kwargs)
+
+        def compute(self):
+            pr, re, th = tmc.BinaryPrecisionRecallCurve.compute(self)
+            return torch.stack((pr.float(), re.float(), torch.cat((th.float(), torch.Tensor([0.])))))
+
+    class _mcc(tmc.BinaryMatthewsCorrCoef):
+        """The values may not be floats for some reason."""
+
+        def compute(self):
+            return tmc.BinaryMatthewsCorrCoef.compute(self).float()
+
+    class _conf(tmc.BinaryConfusionMatrix):
+        """The values may not be floats for some reason."""
+
+        def compute(self):
+            return tmc.BinaryConfusionMatrix.compute(self).float()
+
+    acc: tmc.BinaryAccuracy
+    pr: tmc.BinaryPrecision
+    re: tmc.BinaryRecall
+    f1: tmc.BinaryF1Score
+    aupr: tmc.BinaryAveragePrecision
+    prc: _prc
+    mcc: _mcc
+    conf: _conf
     loss: tm.MeanMetric
     p0: tm.MeanMetric
     p1: tm.MeanMetric
-    mcc: tm.MatthewsCorrCoef
-    conf: tm.ConfusionMatrix
 
-    def __init__(self):
+    def __init__(self, bootstraps: int = 0):
         for name, cls in zip(
-                ['acc', 'pr', 're', 'f1',
-                 'aupr', 'prc', 'loss', 'p0', 'p1', 'mcc'],
-                [tm.Accuracy, tm.Precision, tm.Recall, tm.F1Score,
-                 tm.AveragePrecision, tm.PrecisionRecallCurve, *[tm.MeanMetric] * 3]):
+                ['acc', 'pr', 're', 'f1', 'aupr', 'prc', 'mcc', 'conf',
+                 'loss', 'p0', 'p1'],
+                [tmc.BinaryAccuracy, tmc.BinaryPrecision, tmc.BinaryRecall,
+                 tmc.BinaryF1Score, tmc.BinaryAveragePrecision,
+                 Metrics._prc, Metrics._mcc, Metrics._conf, *[tm.MeanMetric] * 3]):
             setattr(self, name, cls().to(device))
-        self.mcc = tm.MatthewsCorrCoef(2).to(device)
-        self.conf = tm.ConfusionMatrix(2).to(device)
-        for _, metric in self:
+        for name, metric in self:
             metric.persistent(True)
+            if bootstraps:
+                setattr(self, name, tm.BootStrapper(metric, num_bootstraps=bootstraps))
 
     def __iter__(self):
         for name, metric in vars(self).items():
@@ -44,6 +68,12 @@ class Metrics:
     def reset(self):
         for _, metric in self:
             metric.reset()
+            # # MARK this doesn't reset properly!
+            # if type(metric) == tm.BootStrapper:
+            #     for m in metric.metrics:
+            #         m.reset()
+            # else:
+            #     metric.reset()
 
     def load_state(self, state: dict = None):
         if state is None:
@@ -67,27 +97,117 @@ class Metrics:
         d = dict()
         preds = preds.clone().detach()
         for name, metric in self:
-            if type(metric) != tm.MeanMetric:
-                d[name] = metric(preds, labels.int())
+            if (t := type(metric)) == tm.BootStrapper:
+                t = type(metric.metrics[0])
+            if t != tm.MeanMetric:
+                d[name] = metric(preds.float(), labels.int())
         if loss is not None:
-            d['loss'] = self.loss(loss.clone().detach())
-        pd = dict()
+            if type(self.loss) == tm.BootStrapper:
+                self.loss.update(loss.clone().detach().view(-1, 1))
+            else:
+                d['loss'] = self.loss(loss.clone().detach())
+        p_d = dict()
         for i, metric in enumerate([self.p0, self.p1]):
             t = preds[labels == i]
             if not t.numel():
                 continue
-            pd[str(i)] = metric(t)
-        if pd:
-            d['p_hat'] = pd
-        if 'aupr' in d and torch.isnan(d['aupr']) and not keep_all:
+            if type(metric) == tm.BootStrapper:
+                metric.update(t)
+            else:
+                p_d[str(i)] = metric(t)
+        if p_d:
+            d['p_hat'] = p_d
+        if 'aupr' in d and type(d['aupr']) == torch.Tensor and \
+                torch.isnan(d['aupr']) and not keep_all:
             d.pop('aupr')
         if not keep_all:
             d.pop('conf')
             d.pop('prc')
         return d
 
-    @staticmethod
-    def pivot(cclass_metrics: dict[str, dict]) -> dict[str, dict]:
+
+class Writer(SummaryWriter):
+
+    def __init__(self, *args, **kwargs):
+        super(Writer, self).__init__(*args, **kwargs)
+
+    def plot_cm(self, d: dict, interval: str, idx: int):
+        # plt.style.use('default')
+        # if (conf := d.pop('conf', None)) is not None:
+        #     # for validation intervals, draw a confusion matrix and a PR curve
+        #     if type(conf) == dict:
+        #         fig, axes = plt.subplots(1, 3, figsize=(5.4, 1.8),
+        #                                  sharey=True, sharex=True)
+        #         for i, ax in enumerate(axes):
+        #             c = f'C{i + 1}'
+        #             cm = conf[c].cpu().float()
+        #             cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
+        #             ax.imshow(cm, cmap='gray_r', vmin=0, vmax=1)
+        #             ax.set(title=c, xticks=[0, 1], yticks=[0, 1])
+        #             for y in [0, 1]:
+        #                 for x in [0, 1]:
+        #                     c = cm[y, x]
+        #                     ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
+        #             if not i:
+        #                 ax.set(xlabel='prediction', ylabel='label')
+        #     else:
+        #         fig, ax = plt.subplots(1, 1, figsize=(1.8, 1.8))
+        #         cm = conf.cpu().float()
+        #         cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
+        #         ax.imshow(cm, cmap='gray_r', vmin=0, vmax=1)
+        #         ax.set(xticks=[0, 1], yticks=[0, 1], xlabel='prediction', ylabel='label')
+        #         for y in [0, 1]:
+        #             for x in [0, 1]:
+        #                 c = cm[y, x]
+        #                 ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
+        #     fig.tight_layout()
+        #     self.add_figure(f'conf/{interval}', fig, idx)
+        d.pop('conf', None)
+
+    def plot_prc(self, d: dict, interval: str, idx: int):
+        # plt.style.use('default')
+        # if (prc := d.pop('prc', None)) is not None:
+        #     if type(prc) == dict:
+        #         dfs = list()
+        #         for cclass, ts in prc.items():
+        #             df = pd.DataFrame(t.cpu().squeeze().view(-1).numpy() for t in ts).T
+        #             df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
+        #             df['cclass'] = cclass
+        #             dfs.append(df)
+        #         df = pd.concat(dfs).reset_index()
+        #     else:
+        #         df = pd.DataFrame(t.cpu().squeeze().view(-1).numpy() for t in prc).T
+        #         df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
+        #         df['cclass'] = 'train'
+        #
+        #     plt.style.use('default')
+        #     sns.set_theme()
+        #     fig = sns.relplot(kind='line',
+        #                       data=df,
+        #                       x='recall', y='precision',
+        #                       hue='cclass',
+        #                       aspect=1, height=2.8,
+        #                       ci=None, drawstyle='steps-post')
+        #     t = [0, .25, .5, .75, 1]
+        #     tl = ['0', '.25', '.5', '.75', '1']
+        #     fig.set(xlabel='recall', ylabel='precision', box_aspect=1,
+        #             xlim=(-.1, 1.1), ylim=(-.1, 1.1),
+        #             xticks=t, yticks=t, xticklabels=tl, yticklabels=tl)
+        #     fig.tight_layout()
+        #     self.add_figure(f'prc/{interval}', fig.fig, idx)
+        d.pop('prc', None)
+
+    def add_interval(self, d: dict, interval: str, idx: int):
+        self.plot_cm(d, interval, idx)
+        self.plot_prc(d, interval, idx)
+
+        for k, v in d.items():
+            if type(v) != dict:
+                self.add_scalar(f'{k}/{interval}', v, idx)
+            else:
+                self.add_scalars(f'{k}/{interval}', v, idx)
+
+    def pivot(self, cclass_metrics: dict[str, dict]) -> dict[str, dict]:
         """Transform a {C1,C2,C3} -> {ACC, MCC, ...} dict of results to {ACC, ...} -> {C1: ..., C2: }"""
         m = dict()
         for c, c_dict in cclass_metrics.items():
@@ -96,78 +216,3 @@ class Metrics:
         m['p_hat'] = {f'{cclass}_{label}': v for cclass, d in m['p_hat'].items()
                       for label, v in d.items()}
         return m
-
-
-class Writer(SummaryWriter):
-
-    def __init__(self, *args, **kwargs):
-        super(Writer, self).__init__(*args, **kwargs)
-
-    def add_interval(self, d: dict, interval: str, idx: int):
-        plt.style.use('default')
-        if (conf := d.pop('conf', None)) is not None:
-            if type(conf) == dict:
-                fig, axes = plt.subplots(1, 3, figsize=(5.4, 1.8),
-                                         sharey=True, sharex=True)
-                for i, ax in enumerate(axes):
-                    c = f'C{i + 1}'
-                    cm = conf[c].cpu().float()
-                    cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
-                    ax.imshow(cm, cmap='gray_r')
-                    ax.set(title=c, xticks=[0, 1], yticks=[0, 1])
-                    for y in [0, 1]:
-                        for x in [0, 1]:
-                            c = cm[y, x]
-                            ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
-                    if not i:
-                        ax.set(xlabel='prediction', ylabel='label')
-            else:
-                fig, ax = plt.subplots(1, 1, figsize=(1.8, 1.8))
-                cm = conf.cpu().float()
-                cm /= cm.sum(dim=-1).view(-1, 1).clamp(min=1)
-                ax.imshow(cm, cmap='gray_r')
-                ax.set(xticks=[0, 1], yticks=[0, 1], xlabel='prediction', ylabel='label')
-                for y in [0, 1]:
-                    for x in [0, 1]:
-                        c = cm[y, x]
-                        ax.text(x, y, f'{c:.2g}', ha='center', va='center', color=f'{c.round().item()}')
-            fig.tight_layout()
-            self.add_figure(f'conf/{interval}', fig, idx)
-        d.pop('conf', None)
-
-        if (prc := d.pop('prc', None)) is not None:
-            if type(prc) == dict:
-                dfs = list()
-                for cclass, ts in prc.items():
-                    df = pd.DataFrame(t.cpu().numpy() for t in ts).T
-                    df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
-                    df['cclass'] = cclass
-                    dfs.append(df)
-                df = pd.concat(dfs).reset_index()
-            else:
-                df = pd.DataFrame(t.cpu().numpy() for t in prc).T
-                df = df.rename(columns={0: 'precision', 1: 'recall', 2: 'thresholds'})
-                df['cclass'] = 'train'
-
-            plt.style.use('default')
-            sns.set_theme()
-            fig = sns.relplot(kind='line',
-                              data=df,
-                              x='recall', y='precision',
-                              hue='cclass',
-                              aspect=1, height=2.8,
-                              ci=None, drawstyle='steps-post')
-            t = [0, .25, .5, .75, 1]
-            tl = ['0', '.25', '.5', '.75', '1']
-            fig.set(xlabel='recall', ylabel='precision', box_aspect=1,
-                    xlim=(-.1, 1.1), ylim=(-.1, 1.1),
-                    xticks=t, yticks=t, xticklabels=tl, yticklabels=tl)
-            fig.tight_layout()
-            self.add_figure(f'prc/{interval}', fig.fig, idx)
-        d.pop('prc', None)
-
-        for k, v in d.items():
-            if type(v) != dict:
-                self.add_scalar(f'{k}/{interval}', v, idx)
-            else:
-                self.add_scalars(f'{k}/{interval}', v, idx)

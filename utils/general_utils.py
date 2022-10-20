@@ -4,6 +4,7 @@ import json
 import logging
 import subprocess as sp
 import sys
+import warnings
 from pathlib import Path
 from typing import Iterable, Union
 
@@ -62,6 +63,19 @@ def publish(checkpoint_file: Union[str, Path],
             model: nn.Module, path: Union[str, Path]) -> None:
     model.load_state_dict(torch.load(checkpoint_file)['model_state_dict'])
     torch.save(model, Path(path).with_suffix('.pth'))
+
+
+def search_ppi_weight(chk: dict, tar: Path) -> float:
+    if w := chk.get('cfg', dict()).get('ppi_weight', None):
+        return w
+    f = tar.parent / f'config_{tar.parent.name}.json'
+    if not f.is_file():
+        warnings.warn(f'no PPI weight found in {tar}, and no immediately '
+                      f'corresponding config {f} found', RuntimeWarning)
+        return 1.
+    with open(f, 'r') as json_file:
+        js = json.load(json_file)
+    return js.get('train_params', dict()).get('ppi_weight', 1.)
 
 
 def checkpoint_model(model_save_path, model_name, epoch, num_max_epoch,

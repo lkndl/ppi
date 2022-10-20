@@ -26,7 +26,7 @@ from tqdm import tqdm
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 from ppi.metrics import Writer, Metrics
-from ppi.eval import Evaluator
+from ppi.eval import Evaluator, Intervalometer, evaluate_model
 from ppi.config import parse
 
 from train.interaction import InteractionMap
@@ -65,31 +65,78 @@ class H5WriteMode(str, Enum):
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def embed(ctx: typer.Context,
           fasta: Path = 'train.fasta',
-          h5_out: Path = 'all.h5',
+          h5_in: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri.h5',
+          h5_out: Path = 'mbeds.h5',
           h5_mode: H5WriteMode = H5WriteMode.exit) -> None:
     cfg = parse(ctx, write=False)
 
     seqs = SeqIO.to_dict(SeqIO.parse(fasta, 'fasta'))
+    j = 0
 
     if not h5_out.is_file():
         h5_mode = H5WriteMode.overwrite
     elif h5_mode == H5WriteMode.exit:
         raise FileExistsError(f'H5 file {h5_out} exists. Choose different path, '
                               f'or define append/overwrite mode')
-    with h5py.File(h5_out, h5_mode) as new_h5, \
-            h5py.File('/mnt/project/kaindl/ppi/mem_leak/smaller.h5', 'r') as old_h5:
-        for seq_id in rich.progress.track(seqs, total=len(seqs)):
+    with h5py.File(h5_out, h5_mode) as new_h5, h5py.File(h5_in, 'r') as old_h5:
+        for seq_id in tqdm(seqs, total=len(seqs)):
             if seq_id in old_h5:
                 if seq_id in new_h5:
                     if not np.allclose(new_h5[seq_id], old_h5[seq_id]):
                         warnings.warn(f'h5py Dataset {seq_id} already exists'
                                       ' and values differ!', RuntimeWarning)
                     continue
-                new_h5[seq_id] = np.array(old_h5[seq_id])
+                new_h5[seq_id] = np.array(old_h5[seq_id]).astype(np.float16)
+                j += 1
+    print(f'copied {j} mbeds for {len(seqs)} query seqs')
+
+
+@app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
+def tmvec(ctx: typer.Context,
+          h5_in: Path = 'mbeds.h5',
+          h5_out: Path = 'mbeds_tmvec.h5',
+          h5_mode: H5WriteMode = H5WriteMode.exit) -> None:
+    cfg = parse(ctx, write=False)
+
+    if not h5_out.is_file():
+        h5_mode = H5WriteMode.overwrite
+    elif h5_mode == H5WriteMode.exit:
+        raise FileExistsError(f'H5 file {h5_out} exists. Choose different path, '
+                              f'or define append/overwrite mode')
+
+    from tm_vec.embed_structure_model import trans_basic_block_Config, trans_basic_block
+    from tm_vec.tm_vec_utils import embed_tm_vec
+
+    tmvec_config_path = '/mnt/project/kaindl/tm-vec/models/tm_vec_swiss_model_params.json'
+    tmvec_model_path = '/mnt/project/kaindl/tm-vec/models/tm_vec_swiss_model.ckpt'
+
+    tm_vec_model_config = trans_basic_block_Config.from_json(tmvec_config_path)
+    tmvec_model = trans_basic_block.load_from_checkpoint(tmvec_model_path, config=tm_vec_model_config)
+    tmvec_model = tmvec_model.to(device)
+    tmvec_model = tmvec_model.eval()
+
+    j = 0
+    with h5py.File(h5_out, h5_mode) as new_h5, h5py.File(h5_in, 'r') as old_h5, \
+            h5py.File(h5_out.with_name(h5_out.stem + '_only.h5'), h5_mode) as new_h5_tmvec_only:
+        seq_ids = set(old_h5.keys())
+        for seq_id in tqdm(seq_ids, total=len(seq_ids)):
+            t5_mbed = torch.Tensor(old_h5[seq_id]).unsqueeze(1).to(device)
+            tmvec_mbed = embed_tm_vec(t5_mbed, tmvec_model, device).astype(np.float16)
+            concat = np.concatenate((t5_mbed.cpu().squeeze().numpy()
+                                     .astype(np.float16), tmvec_mbed), axis=1)
+            if seq_id in new_h5:
+                if not np.allclose(new_h5[seq_id], concat):
+                    warnings.warn(f'h5py Dataset {seq_id} already exists'
+                                  ' and values differ!', RuntimeWarning)
+                continue
+            new_h5[seq_id] = concat
+            new_h5_tmvec_only[seq_id] = tmvec_mbed
+            j += 1
+    print(f'created {j} tmvec concat mbeds for {len(seq_ids)} query seqs')
 
 
 class WriteMode(str, Enum):
-    none = None
+    none = 'none'
     exit = 'exit'
     overwrite = 'w'
     append = 'a'
@@ -115,71 +162,71 @@ def predict(model: InteractionMap, dataloader: DataLoader,
 
     model.eval()
     with torch.no_grad():
-        preds, all_labels, i_maps = [], [], []
+        preds, all_labels = [], []
         for batch, (n0, n1, labels) in enumerate(dataloader):
             all_labels.append(labels)
 
             for _n0, _n1, _y in zip(n0, n1, labels):
                 z_a = embeddings[_n0].to(device)
                 z_b = embeddings[_n1].to(device)
-                # i_map, p_hat, yhat = model.map_predict_modified(z_a, z_b)
-                # i_maps.append(torch.mean(i_map))
                 p_hat = model.predict_func(z_a, z_b)
 
-                line = f'{batch}\t{_n0}\t{_n1}{cclass}{_y.item()}\t{p_hat.item():.4f}\n'
-                # if phat > .5:
-                print(line, end='')
                 if mode.value in 'wa':
+                    line = f'{batch}\t{_n0}\t{_n1}{cclass}{_y.item()}\t{p_hat.item():.4f}\n'
                     tsv.write(line)
 
                 preds.append(p_hat.flatten(0))
 
     if mode.value in 'wa':
         tsv.close()
-    return torch.cat(preds), torch.cat(all_labels)
+    return torch.cat(preds).to(device), torch.cat(all_labels).float().to(device)
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def evaluate(ctx: typer.Context,
-             model: Path = 'model.tar',
-             tsv: Path = 'test.tsv',
-             h5: Path = 'all.h5',
+             model: Path = typer.Option('model.tar'),
+             pattern: str = '.tar',
+             test_tsv: Path = 'in/val_4k.tsv',
+             h5: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri_val.h5',
+             bst: int = 4,
              ):
     cfg = parse(ctx)
-    batch_size = 5
+    models = [model] if model.is_file() else utils.glob_type(model, pattern)
 
     # load the test, separated by class
     dataloaders, seq_ids = get_dataloaders_and_ids(
-        tsv, batch_size, augment=False, shuffle=False, split_column='cclass')
+        cfg.test_tsv, cfg.batch_size, augment=cfg.augment, shuffle=False,
+        seed=42, split_column='cclass')
     embeddings = get_embeddings(h5, seq_ids)
 
-    path = model
-    model = InteractionMap(**vars(cfg))
-    if path.suffix == '.tar':
-        checkpoint = torch.load(path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-    elif path.suffix == '.pth':
-        model.load_state_dict(torch.load(path))
-    else:
-        raise ValueError('Expected model as checkpoint.TAR or published_model.PTH')
+    writer = Writer(log_dir=cfg.wd / 'tboard' / 'eval', flush_secs=10)
 
-    model.to(device)
-    model.eval()
-    print('model loaded')
+    for path in sorted(models):
+        name = path.resolve().parent.name
+        print(f'eval {path} ... ', end='')
+        idx = path.stem.split('_')[-1]
+        idx = int(idx) if idx.isnumeric() else 0
 
-    lines = list()
-    metrics = Metrics()
+        model = InteractionMap(**vars(cfg))
+        if path.suffix == '.tar':
+            checkpoint = torch.load(path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
 
-    for (cclass, dataloader), m in zip(dataloaders.items(), list('waa')):
-        preds, labels = predict(model, dataloader, embeddings,
-                                mode=WriteMode(m), cclass=cclass)
-        vals = metrics(preds, labels, nn.BCELoss()(preds, labels.float()), keep_all=True)
-        vals.pop('p_hat')
-        if not lines:
-            lines.append(f'cclass\t' + '\t'.join([f'{k:>7}' for k in vals.keys()]))
-        lines.append(f'C{cclass:<6}\t' + '\t'.join(f'{v: .4f}' for v in vals.values()))
+            # load or guess the PPI weight for calculation of the test loss
+            cfg.ppi_weight = utils.search_ppi_weight(checkpoint, path)
+            model.ppi_weight = cfg.ppi_weight
+        elif path.suffix == '.pth':
+            model.load_state_dict(torch.load(path))
+            # ppi weights won't be used when a model is final as no losses calculated
+        else:
+            raise ValueError('Expected model as checkpoint.TAR or published_model.PTH')
 
-    print('\n'.join(lines))
+        model.to(device)
+        print('\b\b\b\b\b: model loaded')
+
+        _, results, runtimes = evaluate_model(model, embeddings, dataloaders, bootstraps=bst)
+        # TODO this should paint the eval results to the tensorboard but ....
+        writer.add_interval(writer.pivot(results), name, idx)
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
@@ -211,15 +258,6 @@ def train(ctx: typer.Context,
 def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
     writer = Writer(log_dir=cfg.wd / 'tboard' / cfg.name, flush_secs=10)
     writer.add_text(cfg.name, str(cfg))
-    # layout = {
-    #     'p_hat': {'batch': ['Multiline', ['p_hat/batch']],
-    #               'epoch': ['Multiline', ['p_hat/epoch']]},
-    #     'AUPR': {'batch': ['Multiline', ['aupr/batch']],
-    #              'epoch': ['Multiline', ['aupr/epoch']]},
-    #     'Loss': {'batch': ['Multiline', ['loss/batch']],
-    #              'epoch': ['Multiline', ['loss/epoch']]},
-    # }
-    # writer.add_custom_scalars(layout)
     writer.flush()
 
     # toggle between using rich or not
@@ -248,12 +286,13 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         cm = rich.live.Live(progress_group)
 
     with cm as live:
+        _print(f'write to: {cfg.wd / cfg.name}')
         batch, epoch, finished = 0, 0, False
 
         model = InteractionMap(**vars(cfg))
         params = [p for p in model.parameters() if p.requires_grad]
         optim = Adam(params, lr=cfg.lr, weight_decay=0)
-        model = model.to(device)
+        model.to(device)
         _print('model loaded')
 
         dataloader, seq_ids = get_dataloaders_and_ids(
@@ -266,8 +305,9 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         _print('data loaded')
 
         metrics = Metrics()
-        evaluator = Evaluator(cfg, model, optim, writer, dataloader,
-                              val_loaders, embeddings, cclass_progress)
+        intervalometer = Intervalometer(cfg, dataloader, val_loaders)
+        evaluator = Evaluator(cfg, model, optim, writer, dataloader, val_loaders,
+                              embeddings, cclass_progress, intervalometer, metrics)
 
         if checkpoint is not None:
             model.load_state_dict(checkpoint['model_state_dict'])
@@ -287,7 +327,7 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
             epoch_progress.advance(epoch_task_id)
         if batch == 0:
             _print('eval untrained model')
-            evaluator.evaluate_model(batch)
+            evaluator(batch)
         for epoch in epoch_tracker(range(epoch, cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
@@ -299,14 +339,8 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 batch_task_id = batch_progress.add_task('', total=len(dataloader) - batch % len(dataloader))
                 b_kwargs |= dict(task_id=batch_task_id)
 
-            # i = 0
             for n0, n1, labels in batch_tracker(dataloader, **b_kwargs):
-                # if (i := i + 1) > 10:
-                #     break
-
-                # now replace: -> step_model -> process_batch
                 preds = list()
-
                 for _n0, _n1 in zip(n0, n1):
                     z_a = embeddings[_n0].to(device)
                     z_b = embeddings[_n1].to(device)
@@ -328,8 +362,8 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 optim.zero_grad()
                 batch += 1
 
-                if eval_reason := evaluator.interval(batch=batch):
-                    if finished := evaluator.evaluate_model(batch):
+                if reason := intervalometer(batch):
+                    if finished := evaluator(batch):
                         break
 
             if not use_tqdm:

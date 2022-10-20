@@ -116,6 +116,7 @@ class Architecture(str, Enum):
     cnn = 'cnn'
     fft = 'fft'
     cmap = 'cmap'
+    attn = 'attn'
 
 
 @dataclass
@@ -146,13 +147,17 @@ class TrainParams(SnakeConfig):
     seed: int = 42  # np.random.default_rng().integers(0, 9999)
     epochs: int = 2
     batch_size: int = 11
-    ppi_weight: float = 5.
+    ppi_weight: float = 10.
     patience: int = 20
     augment: bool = True
     shuffle: bool = True
 
     start_epoch: float = 0.
     start_batch: int = 0
+
+    eval_train_ratio: float = 999999.
+    eval_time_interval: int = 60 * 60 * 2  # 2 hours
+    eval_epoch_interval: float = .05
 
     def __post_init__(self):
         self.h5 = Path(self.h5)
@@ -163,15 +168,12 @@ class TrainParams(SnakeConfig):
 
 @dataclass
 class TestParams(SnakeConfig):
-    model: str = None
+    model: str = Path('model.tar')
     test_tsv: str = Path('/mnt/project/kaindl/ppi/ppi/smaller/huri_test.tsv')
     out_path: str = Path('predictions.tsv')
 
-    eval_train_ratio: float = 999999.
-    eval_time_interval: int = 60 * 60 * 2  # 2 hours
-    eval_epoch_interval: float = .05
-
     def __post_init__(self):
+        self.model = Path(self.model)
         self.test_tsv = Path(self.test_tsv)
         self.out_path = Path(self.out_path)
 
@@ -271,8 +273,3 @@ class IllegalOptionStart(Exception):
 
 class MissingValueException(Exception):
     pass
-
-
-if __name__ == '__main__':
-    c1 = Config().process()
-    print(c1.name)
