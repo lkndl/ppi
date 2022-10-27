@@ -65,8 +65,15 @@ def publish(checkpoint_file: Union[str, Path],
     torch.save(model, Path(path).with_suffix('.pth'))
 
 
+def get_architecture(tar: Path) -> str:
+    f = tar.parent / f'config_{tar.parent.name}.json'
+    with open(f, 'r') as json_file:
+        js = json.load(json_file)
+    return js.get('model_params', dict()).get('architecture', 'cnn')
+
+
 def search_ppi_weight(chk: dict, tar: Path) -> float:
-    if w := chk.get('cfg', dict()).get('ppi_weight', None):
+    if w := chk.get('ppi_weight', chk.get('cfg', dict()).get('ppi_weight', None)):
         return w
     f = tar.parent / f'config_{tar.parent.name}.json'
     if not f.is_file():

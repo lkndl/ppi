@@ -6,7 +6,7 @@ requires = [
 build-backend = 'setuptools.build_meta'
 
 [tool.setuptools]
-packages = ['ppi']
+packages = ['ppi', 'train', 'utils']
 
 # [build-system]
 # requires = ['poetry-core>=1.0.0']
@@ -14,7 +14,7 @@ packages = ['ppi']
 
 [project]  # tool.poetry
 name = 'ppi'
-version = '0.1.0'
+version = '0.2.0'
 description = ''
 license = {text = 'Apache-2.0'}
 

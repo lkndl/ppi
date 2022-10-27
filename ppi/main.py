@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 import h5py
+import pandas as pd
 import numpy as np
 import pkg_resources
 import rich
@@ -25,9 +26,9 @@ from tqdm import tqdm
 
 warnings.simplefilter(action='ignore', category=UserWarning)
 
-from ppi.metrics import Writer, Metrics
-from ppi.eval import Evaluator, Intervalometer, evaluate_model
 from ppi.config import parse
+from ppi.metrics import Writer, Metrics, pivot
+from ppi.eval import Evaluator, Intervalometer, evaluate_model
 
 from train.interaction import InteractionMap
 from utils import general_utils as utils
@@ -43,27 +44,31 @@ __version__ = pkg_resources.get_distribution('ppi').version
 app = typer.Typer()
 
 
-@app.command()
-def hello(name: str):
-    typer.echo(f'Hello {name}')
-
-
-@app.command()
-def goodbye(name: str, formal: bool = False):
-    if formal:
-        typer.echo(f'Goodbye Ms. {name}. Have a good day.')
-    else:
-        typer.echo(f'Bye {name}!')
-
-
 class H5WriteMode(str, Enum):
     exit = 'exit'
     overwrite = 'w'
     append = 'a'
 
 
+@app.command()
+def embed(fasta: Path = 'train.fasta',
+          h5_file: Path = 'mbeds.h5',
+          h5_mode: H5WriteMode = H5WriteMode.exit) -> None:
+    seqs = SeqIO.to_dict(SeqIO.parse(fasta, 'fasta'))
+    if not h5_file.is_file():
+        h5_mode = H5WriteMode.overwrite
+    elif h5_mode == H5WriteMode.exit:
+        raise FileExistsError(f'H5 file {h5_file} exists. Choose different path, '
+                              f'or define append/overwrite mode')
+    # TODO T5 embedder
+
+    with h5py.File(h5_file, h5_mode) as h5:
+        for seq_id, seq in tqdm(seqs, toal=len(seqs)):
+            pass
+
+
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
-def embed(ctx: typer.Context,
+def slice(ctx: typer.Context,
           fasta: Path = 'train.fasta',
           h5_in: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri.h5',
           h5_out: Path = 'mbeds.h5',
@@ -89,6 +94,26 @@ def embed(ctx: typer.Context,
                 new_h5[seq_id] = np.array(old_h5[seq_id]).astype(np.float16)
                 j += 1
     print(f'copied {j} mbeds for {len(seqs)} query seqs')
+
+
+@app.command()
+def scramble(tsv: Path, seed: int = 42) -> None:
+    """
+    For a PPI dataset as TSV, randomly shuffle CRC hashes,
+    i.e. exchange all occurrences of A with B and vice versa.
+    Output to STDOUT, re-direct via ">"
+    :param tsv: PPI dataset
+    :param seed: for reproducible shuffling
+    """
+    pairs = pd.read_csv(tsv, sep='\t')  # [['hash_A', 'hash_B', 'label']]
+    pair_ids = sorted(set(np.unique(pairs.iloc[:, [0, 1]])))
+    rng = np.random.default_rng(seed=seed)
+    shuffled_ids = rng.choice(pair_ids, size=len(pair_ids),
+                              replace=False, shuffle=True)
+    lookup = dict(zip(pair_ids, shuffled_ids)).get
+    pairs.hash_A = pairs.hash_A.apply(lookup)
+    pairs.hash_B = pairs.hash_B.apply(lookup)
+    print(pairs.to_csv(index=False, header=True, sep='\t').rstrip())
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
@@ -142,10 +167,14 @@ class WriteMode(str, Enum):
     append = 'a'
 
 
-def predict(model: InteractionMap, dataloader: DataLoader,
+# @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
+def predict(ctx: typer.Context,
+            model: InteractionMap, dataloader: DataLoader,
             embeddings: dict[str, torch.Tensor],
             mode: WriteMode = WriteMode.none, cclass: str = '',
             ) -> tuple[torch.Tensor, torch.Tensor]:
+    # TODO bare bones, write a TSV, timed
+    cfg = parse(ctx, write=False)
     tsv = Path('predict.tsv')
     if mode == WriteMode.exit and tsv.is_file():
         exit(f'{tsv} exists')
@@ -190,7 +219,8 @@ def evaluate(ctx: typer.Context,
              h5: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri_val.h5',
              bst: int = 4,
              ):
-    cfg = parse(ctx)
+    # TODO this would be so much easier from a TSV ...
+    cfg = parse(ctx, write=False)
     models = [model] if model.is_file() else utils.glob_type(model, pattern)
 
     # load the test, separated by class
@@ -200,33 +230,70 @@ def evaluate(ctx: typer.Context,
     embeddings = get_embeddings(h5, seq_ids)
 
     writer = Writer(log_dir=cfg.wd / 'tboard' / 'eval', flush_secs=10)
+    eval_tsv = cfg.wd / f'eval_{cfg.name}.tsv'
+    cols = ['name', 'idx', 'metric', 'measure', 'C1', 'C2', 'C3']
+    prc_cols = ['name', 'idx', 'cclass', 'th', 'pr', 'pr_std', 're']
+    pred_cols = ['name', 'idx', 'hash_A', 'hash_B', 'p_hat', 'label', 'cclass']
+    exists = (cfg.wd / f'eval_{cfg.name}.tsv').is_file()
+    with open(cfg.wd / f'eval_{cfg.name}.tsv', 'a') as tsv, \
+            open(cfg.wd / f'eval_{cfg.name}_prc.tsv', 'a') as prc_tsv, \
+            open(cfg.wd / f'eval_{cfg.name}_preds.tsv', 'a') as preds_tsv:
+        if not exists:
+            tsv.write('\t'.join(cols) + '\n')
+            prc_tsv.write('\t'.join(prc_cols) + '\n')
+            preds_tsv.write('\t'.join(pred_cols) + '\n')
 
-    for path in sorted(models):
-        name = path.resolve().parent.name
-        print(f'eval {path} ... ', end='')
-        idx = path.stem.split('_')[-1]
-        idx = int(idx) if idx.isnumeric() else 0
+        for path in tqdm(sorted(models)):
+            name = path.resolve().parent.name
+            # print(f'eval {path} ... ', end='')
+            idx = path.stem.split('_')[-1]
+            idx = int(idx) if idx.isnumeric() else 0
+            arc = utils.get_architecture(path)
 
-        model = InteractionMap(**vars(cfg))
-        if path.suffix == '.tar':
-            checkpoint = torch.load(path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            model = InteractionMap(**vars(cfg) | dict(architecture=arc))
+            if path.suffix == '.tar':
+                checkpoint = torch.load(path, map_location=device)
+                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
-            # load or guess the PPI weight for calculation of the test loss
-            cfg.ppi_weight = utils.search_ppi_weight(checkpoint, path)
-            model.ppi_weight = cfg.ppi_weight
-        elif path.suffix == '.pth':
-            model.load_state_dict(torch.load(path))
-            # ppi weights won't be used when a model is final as no losses calculated
-        else:
-            raise ValueError('Expected model as checkpoint.TAR or published_model.PTH')
+                # load or guess the PPI weight for calculation of the test loss
+                model.ppi_weight = utils.search_ppi_weight(checkpoint, path)
+            # elif path.suffix == '.pth':
+            #     model.load_state_dict(torch.load(path))
+            #     # ppi weights won't be used when a model is final as no losses calculated
+            else:
+                raise ValueError('Expected model as checkpoint.TAR or published_model.PTH')
 
-        model.to(device)
-        print('\b\b\b\b\b: model loaded')
+            model.to(device)
+            preds, results, runtimes = evaluate_model(model, embeddings, dataloaders, bootstraps=bst)
+            preds[['name', 'idx']] = [name, idx]
+            preds = preds[pred_cols]
+            preds_tsv.write(preds.to_csv(header=False, index=False, sep='\t'))
 
-        _, results, runtimes = evaluate_model(model, embeddings, dataloaders, bootstraps=bst)
-        # TODO this should paint the eval results to the tensorboard but ....
-        writer.add_interval(writer.pivot(results), name, idx)
+            res = pivot(results)
+            prcs = list()
+            for cclass, d in res['prc'].items():
+                df = pd.DataFrame(np.hstack((np.array(d['mean'].clone().cpu()).T,
+                                             np.array(d['std'].clone().cpu()).T))[:, [0, 1, 2, 3]],
+                                  columns=['pr', 're', 'th', 'pr_std'])
+                df['cclass'] = cclass
+                df[['idx', 'name']] = [idx, name]
+                prcs.append(df[prc_cols].copy())
+            prcs = pd.concat(prcs)
+            res.pop('prc')
+            prc_tsv.write(prcs.to_csv(header=False, index=False, sep='\t'))
+            prc_tsv.flush()
+
+            dfs = list()
+            for metric in ['aupr', 'mcc', 'loss']:
+                df = pd.DataFrame(res[metric]).astype(float)
+                df[['idx', 'metric', 'name']] = [idx, metric, name]
+                df = df.reset_index().rename(dict(index='measure'), axis='columns')[cols]
+                dfs.append(df)
+            dt = pd.concat(dfs)
+
+            tsv.write(dt.to_csv(header=False, index=False, sep='\t'))
+            tsv.flush()
+    print(f'evaluated {len(models)} models, results in {eval_tsv}')
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))

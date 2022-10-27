@@ -168,7 +168,7 @@ class TrainParams(SnakeConfig):
 
 @dataclass
 class TestParams(SnakeConfig):
-    model: str = Path('model.tar')
+    model: str = Path('../runs/eval/model.tar')
     test_tsv: str = Path('/mnt/project/kaindl/ppi/ppi/smaller/huri_test.tsv')
     out_path: str = Path('predictions.tsv')
 

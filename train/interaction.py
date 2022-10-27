@@ -104,13 +104,13 @@ class IMapCNN(nn.Module):
     def __init__(self):
         super(IMapCNN, self).__init__()
         # 1 input image channel, 6 output channels, 5x5 square convolution kernel
-        self.conv1 = nn.Conv2d(1, 3, 5)   # 1, 6, 5 on server
-        self.conv2 = nn.Conv2d(3, 8, 5)  # 6, 16, 5 on server
+        self.conv1 = nn.Conv2d(1, 6, 5)   # 1, 6, 5 on server
+        self.conv2 = nn.Conv2d(6, 16, 5)  # 6, 16, 5 on server
         # change receptive field via stride + dilation
         # an affine operation: y = Wx + b
-        self.fc1 = nn.Linear(8 * 5 * 5, 60)  # 5*5 from image dimension  # 16 ... 120 on server
-        self.fc2 = nn.Linear(60, 1)  # 120, 84 on server
-        # self.fc3 = nn.Linear(84, 1)  # on on server
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # 5*5 from image dimension  # 16 ... 120 on server
+        self.fc2 = nn.Linear(120, 84)  # 120, 84 on server
+        self.fc3 = nn.Linear(84, 1)  # on on server
 
     def forward(self, x):
         # Max pooling over a (2, 2) window
@@ -121,8 +121,8 @@ class IMapCNN(nn.Module):
         x = torch.nn.functional.adaptive_avg_pool2d(x, 5)  # for fixed-size, square output
         x = torch.flatten(x, 1)  # flatten all dimensions except the batch dimension
         x = torch.relu(self.fc1(x))
-        x = torch.sigmoid(self.fc2(x))  # relu on server
-        # x = torch.sigmoid(self.fc3(x))  # on on server
+        x = torch.relu(self.fc2(x))  # relu on server
+        x = torch.sigmoid(self.fc3(x))  # on on server
         return x
 
 
@@ -163,8 +163,9 @@ class InteractionMap(nn.Module):
             **kwargs
     ):
         super(InteractionMap, self).__init__()
-        self.embedding = EmbeddingsProjection(1024, emb_projection_dim, dropout_p,
+        self.embedding = EmbeddingsProjection(1024, emb_projection_dim, dropout_p,  # TODO 1536
                                               activation=nn.ELU())
+
         self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width,
                                   cnn_activation=nn.Identity())
 

@@ -18,11 +18,12 @@ class Metrics:
         """This returns a tuple, which we can't easily stack -> Tensorify"""
 
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, thresholds=100, **kwargs)
+            super().__init__(*args, thresholds=101, **kwargs)
 
         def compute(self):
             pr, re, th = tmc.BinaryPrecisionRecallCurve.compute(self)
-            return torch.stack((pr.float(), re.float(), torch.cat((th.float(), torch.Tensor([0.])))))
+            return torch.stack((pr.float(), re.float(),
+                                torch.cat((th.float(), torch.Tensor([1.]).to(device)))))
 
     class _mcc(tmc.BinaryMatthewsCorrCoef):
         """The values may not be floats for some reason."""
@@ -59,7 +60,8 @@ class Metrics:
         for name, metric in self:
             metric.persistent(True)
             if bootstraps:
-                setattr(self, name, tm.BootStrapper(metric, num_bootstraps=bootstraps))
+                setattr(self, name, tm.BootStrapper(
+                    metric, num_bootstraps=bootstraps).to(device))
 
     def __iter__(self):
         for name, metric in vars(self).items():
@@ -100,7 +102,10 @@ class Metrics:
             if (t := type(metric)) == tm.BootStrapper:
                 t = type(metric.metrics[0])
             if t != tm.MeanMetric:
-                d[name] = metric(preds.float(), labels.int())
+                try:
+                    d[name] = metric(preds.float(), labels.int())
+                except Exception as ex:
+                    print(name, ex)
         if loss is not None:
             if type(self.loss) == tm.BootStrapper:
                 self.loss.update(loss.clone().detach().view(-1, 1))
@@ -207,12 +212,13 @@ class Writer(SummaryWriter):
             else:
                 self.add_scalars(f'{k}/{interval}', v, idx)
 
-    def pivot(self, cclass_metrics: dict[str, dict]) -> dict[str, dict]:
-        """Transform a {C1,C2,C3} -> {ACC, MCC, ...} dict of results to {ACC, ...} -> {C1: ..., C2: }"""
-        m = dict()
-        for c, c_dict in cclass_metrics.items():
-            for metric, value in c_dict.items():
-                m[metric] = m.get(metric, dict()) | {f'C{c}': value}
-        m['p_hat'] = {f'{cclass}_{label}': v for cclass, d in m['p_hat'].items()
-                      for label, v in d.items()}
-        return m
+
+def pivot(cclass_metrics: dict[str, dict]) -> dict[str, dict]:
+    """Transform a {C1,C2,C3} -> {ACC, MCC, ...} dict of results to {ACC, ...} -> {C1: ..., C2: }"""
+    m = dict()
+    for c, c_dict in cclass_metrics.items():
+        for metric, value in c_dict.items():
+            m[metric] = m.get(metric, dict()) | {f'C{c}': value}
+    m['p_hat'] = {f'{cclass}_{label}': v for cclass, d in m['p_hat'].items()
+                  for label, v in d.items()}
+    return m
