@@ -6,7 +6,7 @@ requires = [
 build-backend = 'setuptools.build_meta'
 
 [tool.setuptools]
-packages = ['ppi', 'train', 'utils']
+packages = ['ppi', 'train', 'utils', 'ppi_utils']
 
 # [build-system]
 # requires = ['poetry-core>=1.0.0']
@@ -14,7 +14,7 @@ packages = ['ppi', 'train', 'utils']
 
 [project]  # tool.poetry
 name = 'ppi'
-version = '0.2.0'
+version = '0.3.0'
 description = ''
 license = {text = 'Apache-2.0'}
 
@@ -32,7 +32,7 @@ biopython = '^1.79'
 
 [project.scripts]  # project.scripts  tool.poetry.scripts
 ppi = 'ppi.main:app'
-embed = 'data.embedding.run_embed:main'
+embed = 'embed.run_embed:main'
 train = 'train.train_t5_cval:main'
 perprot = 'train.train_perprot:main'
 ppi_eval = 'eval.eval_model:main'

@@ -30,7 +30,7 @@ def read_fasta(fasta_path: Path, split_char='!', id_field=0):
                 uniprot_id = uniprot_id.replace('/', '_').replace('.', '_')
                 seqs[uniprot_id] = ''
             else:
-                # repl. all whie-space chars and join seqs spanning multiple lines,
+                # repl. all white-space chars and join seqs spanning multiple lines,
                 # drop gaps and cast to upper-case
                 seq = ''.join(line.split()).upper().replace('-', '')
                 # repl. all non-standard AAs and map them to unknown/X

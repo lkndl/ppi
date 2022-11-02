@@ -12,8 +12,8 @@ from matplotlib.figure import Figure
 from scipy import stats
 from tqdm import tqdm
 
-from data.utils.cfg import Config, CorrelationType
-from data.utils.general import get_seq_hash
+from ppi_utils.cfg import Config, CorrelationType
+from ppi_utils.general import get_seq_hash
 
 mpl.rcParams['figure.dpi'] = 200
 
@@ -320,7 +320,7 @@ def find_proteome_negative_pairs(extra: np.ndarray,
         # the new, *proteome* interaction partner is always in the second column
         extra_pairs.extend([(p, partner) for partner in partners])
 
-    extras = pd.DataFrame(extra_pairs)
+    extras = pd.DataFrame(extra_pairs).astype(str)
     if verbose:
         print('proteome interactions:')
         print(pd.DataFrame(np.unique(extras.iloc[:, 1],
@@ -328,6 +328,14 @@ def find_proteome_negative_pairs(extra: np.ndarray,
               .describe().round(2).T)
     # extra_crcs = set(extras.iloc[:, 1])
     return extras, extra_interactions - len(extras)
+
+
+def estimate_bias_per_species(pairs: pd.DataFrame,
+                              corrtype: CorrelationType = CorrelationType.PEARSON,
+                              ) -> pd.DataFrame:
+    bias = [(sp, estimate_bias(spdf, corrtype=corrtype)[0])
+            for sp, spdf in pairs.groupby('species')]
+    return pd.DataFrame.from_records(bias, columns=['species', 'bias'])
 
 
 def estimate_bias(positives: pd.DataFrame,
@@ -339,7 +347,10 @@ def estimate_bias(positives: pd.DataFrame,
     the Spearman or Pearson correlation coefficient between their
     protein-appearance frequency vectors.
     """
-    plus, minus = split_pos_neg_plus_minus(positives, negatives)
+    if negatives is None:
+        positives, negatives = sep_plus_minus(positives)
+    plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
+                   for ar in (positives, negatives)]
 
     for p, m in ((plus, minus), (minus, plus)):
         m.update({k: 0 for k in p.keys() - m.keys()})
@@ -353,19 +364,13 @@ def estimate_bias(positives: pd.DataFrame,
         assert False, 'illegal correlation type'
 
 
-def split_pos_neg_plus_minus(positives: pd.DataFrame,
-                             negatives: Union[pd.DataFrame, None]
-                             ) -> tuple[dict, dict]:
-    if negatives is None:
-        assert 'label' in positives.columns
-        negatives = positives.loc[positives.label == 0].copy()
-        positives = positives.loc[positives.label == 1].copy()
-        assert len(positives), 'no positives in passed DataFrame'
-        assert len(negatives), 'no negatives in passed DataFrame'
-
-    plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
-                   for ar in (positives, negatives)]
-    return plus, minus
+def sep_plus_minus(pairs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    assert 'label' in pairs.columns
+    negatives = pairs.loc[pairs.label == 0].copy()
+    positives = pairs.loc[pairs.label == 1].copy()
+    assert len(positives), 'no positives in passed DataFrame'
+    assert len(negatives), 'no negatives in passed DataFrame'
+    return positives, negatives
 
 
 def find_multi_species_ppis(ppi_df: pd.DataFrame) -> pd.DataFrame:
@@ -387,5 +392,5 @@ def find_multi_species_proteins(ppis: pd.DataFrame) -> pd.DataFrame:
 
 def ppis_to_sp_lookup(ppis: pd.DataFrame) -> dict[str, int]:
     return (ppis[['hash_A', 'hash_B', 'species']]
-        .melt(id_vars='species')[['species', 'value']]
-        .set_index('value').to_dict()['species'])
+    .melt(id_vars='species')[['species', 'value']]
+    .set_index('value').to_dict()['species'])

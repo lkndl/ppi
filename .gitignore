@@ -151,4 +151,4 @@ crashlytics-build.properties
 fabric.properties
 
 **/*.yml
-/data/ppi_dataset/template/hi_union.psi
+/data/ppi_data/template/hi_union.psi

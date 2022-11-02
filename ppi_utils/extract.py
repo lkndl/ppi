@@ -8,8 +8,8 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
-from data.utils.general import glob_type
-from data.utils.reduce import dedup_pairs
+from ppi_utils.general import glob_type
+from ppi_utils.reduce import dedup_pairs
 
 
 def unzip_apid(zip_path: Union[str, Path] = None,

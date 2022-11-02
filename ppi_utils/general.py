@@ -2,11 +2,11 @@ import hashlib
 import json
 import shutil
 import subprocess as cmd
-from pathlib import Path
-from typing import Iterable, Union, IO
-
+import zipfile
 from Bio.Seq import Seq
 from Bio.SeqUtils.CheckSum import crc64
+from pathlib import Path
+from typing import Iterable, Union, IO
 
 
 def cmd_run(args, verbose=False):
@@ -131,3 +131,43 @@ def to_lines(_id: str, seq: Union[str, Seq], lw: int = 60) -> str:
     while i < len(seq):
         yield seq[i:i + lw] + '\n'
         i += lw
+
+
+def clean(data_dir: Union[str, Path], name: Union[str, Path] = None) -> None:
+    data_dir = Path(data_dir)
+    assert data_dir.is_dir()
+
+    if not name:
+        name = data_dir.stem
+
+    (data_dir / 'slurm_logs').mkdir(exist_ok=True)
+    for log in data_dir.glob('slurm-*.out'):
+        log.rename(data_dir / 'slurm_logs' / log.name)
+
+    with zipfile.ZipFile(data_dir.parent / f'{name}.zip',
+                         'w', zipfile.ZIP_DEFLATED) as zf:
+        for sfx in ['tsv', 'fasta']:
+            zf.write(data_dir / f'apid_train.{sfx}', f'apid_train.{sfx}')
+            zf.write(data_dir / f'apid_validation.{sfx}', f'apid_validation.{sfx}')
+            zf.write(data_dir / f'huri_test.{sfx}', f'huri_test.{sfx}')
+        if (f := Path(data_dir / 'crc_hashes.tsv')).is_file():
+            zf.write(f, f.name)
+        for d in ['val', 'test']:
+            if (f := data_dir / f'{d}_cclasses.svg').is_file:
+                zf.write(f, f'plots/{f.name}')
+        for d in ['train', 'val', 'test']:
+            if (f := data_dir / f'{d}_ratio_degree.svg').is_file():
+                zf.write(f, f'plots/{f.name}')
+            if (f := data_dir / f'{d}_bias.svg').is_file():
+                zf.write(f, f'plots/{f.name}')
+
+        nb = list(data_dir.parents[1].rglob(f'{data_dir.name}.ipynb'))
+        if len(nb) != 1:
+            print('found no clearly matching notebook')
+        else:
+            zf.write(nb[0], f'{name}.ipynb')
+
+        # for d in ['train', 'val', 'test']:
+        #     if (f := data_dir / f'{d}_proteome.json').is_file():
+        #         zf.write(f, f'proteomes/{f.name}')
+    print(f'done: {zf.filename}')

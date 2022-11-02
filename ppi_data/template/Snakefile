@@ -2,10 +2,7 @@ import sys
 from pathlib import Path
 
 
-if (s := config['pkg_root']) not in sys.path:
-    sys.path.append(s)
-
-from data.utils.general import run_uniqueprot, run_uniqueprot2D
+from ppi_utils.general import run_uniqueprot, run_uniqueprot2D
 
 cwd = Path(config['pp'])
 hval_config = Path(config['hval_config_path'])

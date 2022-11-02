@@ -1,3 +1,4 @@
+from seaborn import JointGrid
 from typing import Union
 
 import matplotlib as mpl
@@ -8,9 +9,9 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 
-from data.utils.pairs import fetch_ratios, fetch_degrees, \
+from ppi_utils.pairs import fetch_ratios, fetch_degrees, \
     fetch_degree_frequencies, fetch_n_proteins, \
-    count_homodimers, estimate_bias, split_pos_neg_plus_minus
+    count_homodimers, estimate_bias, estimate_bias_per_species, sep_plus_minus
 
 mpl.rcParams['figure.dpi'] = 200
 sns.reset_defaults()
@@ -160,7 +161,8 @@ def plot_theoretical_homodimer_share() -> Figure:
 
 
 def plot_interactome_sizes(taxonomy: pd.DataFrame,
-                           val_species: set = None, min_x: int = None) -> Figure:
+                           val_species: set = None, min_x: int = None,
+                           h: float = 6) -> Figure:
     tax = taxonomy.copy()
     tax['species'] = pd.Categorical(tax.species)
     order = list(tax.species)[::-1]
@@ -180,7 +182,7 @@ def plot_interactome_sizes(taxonomy: pd.DataFrame,
         palette=pal,
         order=order,
         s=7,
-        height=len(set(tax.species)) / 6,
+        height=len(set(tax.species)) / h,
         aspect=2,
         zorder=1000,
         legend=True
@@ -213,8 +215,14 @@ def plot_interactome_sizes(taxonomy: pd.DataFrame,
 
 
 @mpl.style.context('seaborn-talk')
-def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame,
-              bias: pd.DataFrame, ratio: float = 10.0, pal: bool = False) -> Figure:
+def plot_bias(plus: pd.DataFrame, minus: pd.DataFrame = None,
+              bias: pd.DataFrame = None, ratio: float = 10.0,
+              pal: bool = False) -> Figure:
+    if minus is None:
+        plus, minus = sep_plus_minus(plus)
+    if bias is None:
+        bias = estimate_bias_per_species(pd.concat((plus, minus)))
+
     s = 'species'
     bias = (bias.merge(plus.groupby(s)['label'].size(), on=s)
             .merge(minus.groupby(s)['label'].size(), on=s))
@@ -287,6 +295,7 @@ def plot_ratio_degree(positives: pd.DataFrame,
                       negatives: pd.DataFrame = None,
                       ratio: float = 10,
                       taxonomy: pd.DataFrame = None,
+                      rasterized: bool = False,
                       ) -> tuple[Figure, Union[None, Figure],
                                  pd.DataFrame, Union[None, pd.DataFrame]]:
     """
@@ -296,8 +305,10 @@ def plot_ratio_degree(positives: pd.DataFrame,
     """
     # TODO test with homodimers to make sure this does not return
     #  node *degrees*, but the ratio of negative to positive edges
-    positives, negatives = positives.copy(), negatives.copy()
-    plus, minus = split_pos_neg_plus_minus(positives, negatives)
+    if negatives is None:
+        positives, negatives = sep_plus_minus(positives)
+    plus, minus = [dict(zip(*np.unique(ar.iloc[:, [0, 1]], return_counts=True)))
+                   for ar in (positives, negatives)]
     new_negatives = minus.keys() - plus.keys()
     minus.update({k: 0 for k in plus.keys() - minus.keys()})
     sp_lookup = positives[['hash_A', 'hash_B', 'species']].melt(
@@ -311,7 +322,7 @@ def plot_ratio_degree(positives: pd.DataFrame,
                       marginal_ticks=True, height=5, space=0, ratio=6,
                       palette='colorblind')
     g.plot_joint(sns.scatterplot, legend=False,
-                 s=25, alpha=.8, rasterized=True
+                 s=25, alpha=.8, rasterized=rasterized,
                  )
     g.plot_marginals(sns.kdeplot, warn_singular=False)
     g.ax_joint.set(  # xlim=(ratio - 4, ratio + 4),
@@ -390,11 +401,45 @@ def plot_ratio_degree(positives: pd.DataFrame,
     return g.figure, h, df, nsp
 
 
+def plot_plus_minus_degrees(plus: pd.DataFrame, minus: pd.DataFrame = None,
+                            rasterized: bool = True,
+                            ratio: float = 1.0,
+                            ) -> JointGrid:
+    if minus is None:
+        plus, minus = sep_plus_minus(plus)
+
+    deg = fetch_degrees(plus).merge(
+        fetch_degrees(minus), on=['species', 'crc_hash'], how='left')
+
+    deg['species'] = pd.Categorical(deg.species)
+    g = sns.JointGrid(data=deg, x='degree_x', y='degree_y', hue='species',
+                      marginal_ticks=True, height=5, space=0, ratio=6,
+                      palette='colorblind')
+    g.plot_joint(sns.scatterplot, legend=False,
+                 s=25, alpha=.8, rasterized=rasterized,
+                 )
+    g.plot_marginals(sns.kdeplot, hue='species', warn_singular=False)
+    g.ax_joint.set(  # xlim=(ratio - 4, ratio + 4),
+        yscale='linear', xscale='log',
+        xlabel='positives',
+        ylabel='negatives')
+
+    g.ax_marg_x.set(yticks=[])
+    g.ax_marg_y.set(xticks=[])
+    g.figure.set_facecolor('white')
+    # sns.despine(ax=g.ax_joint, left=False, bottom=False, right=False, top=False)
+    sns.despine(ax=g.ax_marg_x, left=True)
+    sns.despine(ax=g.ax_marg_y, bottom=False)
+    return g
+
+
 def plot_degrees_wide(ppis: pd.DataFrame,
                       negs: pd.DataFrame,
                       tax: pd.DataFrame = None,
                       dodge: bool = False,
-                      species: list = None) -> Figure:
+                      species: list = None,
+                      height: float = 2.5,
+                      aspect: float = 4.0) -> Figure:
     tdf = (fetch_degrees(negs).merge(fetch_degrees(ppis),
                                      on=['crc_hash', 'species'], how='left')
            .rename(columns=dict(degree_x='negatives', degree_y='positives')))
@@ -414,7 +459,6 @@ def plot_degrees_wide(ppis: pd.DataFrame,
         order, names = [list(ar)[::-1] for ar in tax.loc[tax.species.isin(
             set(tdf.species)), ['species', 'name']].values.T]
 
-    asp = 4
     h = sns.catplot(data=tdf,
                     x='degree',
                     y='species',
@@ -423,15 +467,15 @@ def plot_degrees_wide(ppis: pd.DataFrame,
                     order=order,
                     orient='h',
                     jitter=.3,
-                    height=2.5,
-                    aspect=asp,
+                    height=height,
+                    aspect=aspect,
                     s=2.4,
                     alpha=.3,
                     # palette='colorblind',
                     legend=False,
                     rasterized=True,
                     )
-    h.set(xscale='log', box_aspect=1 / asp, xlabel='pairs per protein')
+    h.set(xscale='log', box_aspect=1 / aspect, xlabel='pairs per protein')
     h.ax.legend(frameon=False, title='', markerscale=.5, loc=(.15, 1), ncol=2)
     if tax is not None:
         h.set(ylabel='', yticklabels=names)

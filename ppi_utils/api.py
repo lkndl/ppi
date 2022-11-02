@@ -16,7 +16,7 @@ from Bio.SeqRecord import SeqRecord
 from dataclass_wizard import JSONWizard
 from tqdm import tqdm
 
-from data.utils.general import get_seq_hash, to_fasta, file_hash
+from ppi_utils.general import get_seq_hash, to_fasta, file_hash
 
 
 @dataclass
@@ -472,33 +472,34 @@ def download_y2h_interactome(
 
 def fetch_proteomes(species: set,
                     proteome_dir: Path = Path('proteomes')) -> None:
-    url = 'https://www.uniprot.org/proteomes/?fil=reference:yes&format=tab&query=' \
-          + '+OR+'.join(f'organism:{sp}' for sp in species)
+    url = 'https://rest.uniprot.org/proteomes/stream?' \
+          'fields=upid,organism,organism_id,protein_count' \
+          '&format=tsv&query=(proteome_type:1) AND ({})' \
+        .format(' OR '.join(f'(organism_id:{sp})' for sp in species))
 
     r = requests.get(url)
     tab = pd.read_csv(StringIO(r.text), sep='\t')
-    assert len(set(tab['Proteome ID'])) == len(tab), \
+    assert len(set(tab['Proteome Id'])) == len(tab), \
         'Got multiple/no proteomes for some species'
 
-    if missing := species - set(tab['Organism ID']):
+    if missing := species - set(tab['Organism Id']):
         if 37296 in missing:
-            s = ['UP000097197', 'Human herpesvirus 8 (HHV-8)', 37296, 72, '', 'Standard', '']
+            s = ['UP000097197', 'Human herpesvirus 8 (HHV-8)', 37296, 72]
             tab = pd.concat([tab, pd.DataFrame(s, index=tab.columns).T])
             missing.remove(37296)
         if 10600 in missing:
-            s = ['UP000007676', 'Human papillomavirus type 6b', 10600,
-                 9, '', 'Outlier (high value)', 'full']
+            s = ['UP000007676', 'Human papillomavirus type 6b', 10600, 9]
             tab = pd.concat([tab, pd.DataFrame(s, index=tab.columns).T])
             missing.remove(10600)
     if missing:
         raise ValueError(f'Missing proteomes: {" ".join((str(j) for j in missing))}')
 
     proteome_dir.mkdir(exist_ok=True, parents=True)
-    proteome_url = 'https://www.uniprot.org/uniprot/?format=fasta&query=proteome:'
+    proteome_url = 'https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=((proteome:{}))'
     with tqdm(tab.iterrows(), total=len(tab)) as pbar:
         for i, proteome in pbar:
             pbar.set_postfix(batch=proteome['Organism'].split('(')[0].strip())
-            r = requests.get(proteome_url + proteome['Proteome ID'], stream=True)
-            with (proteome_dir / f'{proteome["Organism ID"]}.fasta').open('wb') as fd:
+            r = requests.get(proteome_url.format(proteome['Proteome Id']), stream=True)
+            with (proteome_dir / f'{proteome["Organism Id"]}.fasta').open('wb') as fd:
                 for chunk in r.iter_content(chunk_size=1024 * 128):
                     fd.write(chunk)
