@@ -130,11 +130,10 @@ if __name__ == '__main__':
     print(f'Need {len(all_needed_ids)} embeddings overall')
 
     old_h5_files = [Path(p) for p in [
-        '/mnt/project/kaindl/ppi/embeddings/apid_huri/apid_huri.h5',
         '/mnt/project/ducanh.le/PPI/ppi_t5/embeddings/apid_huri_emb.h5',
         '/mnt/project/ducanh.le/PPI/ppi_t5/embeddings/old_apid_huri_emb.h5']]
 
-    out_h5 = Path('/mnt/project/kaindl/ppi/data/apid_huri.h5')
+    out_h5 = Path('/mnt/project/kaindl/ppi/embed_data/apid_huri.h5')
 
     # copy over previously generated embeddings
     with h5py.File(out_h5, 'w') as new_h5:
