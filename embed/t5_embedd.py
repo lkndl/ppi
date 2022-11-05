@@ -5,7 +5,7 @@ import h5py
 import torch
 from tqdm.auto import tqdm
 
-from utils.sequence_utils import parse_fasta
+from ppi_utils.deprec import parse_fasta
 
 
 def get_model(model_type, cache_dir, device):

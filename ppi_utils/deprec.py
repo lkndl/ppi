@@ -1,24 +1,16 @@
 import json
 import pickle
+import warnings
 from pathlib import Path
 from typing import Union
 
+import requests
 from Bio import SeqIO
-from Bio.Seq import Seq
-from Bio.SeqUtils.CheckSum import crc64
+from tqdm import tqdm
 
+from ppi_utils.general import get_seq_hash
 
-def get_seq_hash(seq: Union[str, Seq]) -> str:
-    return crc64(seq)
-
-
-def to_lines(_id: str, seq: Union[str, Seq], lw: int = 60) -> str:
-    yield f'>{_id}\n'
-    i = 0
-    seq = str(seq)
-    while i < len(seq):
-        yield seq[i:i + lw] + '\n'
-        i += lw
+warnings.warn(f'Module isn\'t up-to-date!: {Path(__file__)}', DeprecationWarning)
 
 
 def parse_fasta(fasta_path: Union[str, Path], id_ref_path: Union[str, Path]) -> dict:
@@ -80,3 +72,36 @@ def check_ref_correspondence(raw_seqs, seq_dict, path):
         if seq_dict[ref_num] != seq:
             print(f'Discrepancy for {raw_id}!')
     print('Reference Correspondence Check finished')
+
+
+def uniprot_api_fetch_ensembl(embl_ids: Union[list, set]) -> dict:
+    """
+    :param embl_ids:
+    :return:
+    """
+    query_url = 'https://www.uniprot.org/uniprot/?query={}+organism%3AHuman&sort=score&format=tab&columns=id'
+    entry_url = 'https://www.uniprot.org/uniprot/{}.fasta'
+
+    embl_records = dict()
+    not_found = list()
+    # url_vs_fasta = list()
+
+    for _id in tqdm(sorted({_id.split('.')[0] for _id in embl_ids})):
+        r = requests.get(query_url.format(_id))
+        if not r.ok or not r.text:
+            not_found.append(_id)
+            continue
+
+        found_id = r.text.strip().split('\n')[1]
+        r = requests.get(entry_url.format(found_id))
+
+        if not r.ok or not r.text:
+            not_found.append(_id)
+            continue
+
+        seq = ''.join(r.text.strip().split('\n')[1:])
+        embl_records[_id] = {'id': found_id, 'seq': seq, 'query': _id}
+    if not_found:
+        print(f'missing {len(not_found)}:')
+        print(not_found)
+    return embl_records

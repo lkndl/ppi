@@ -121,6 +121,7 @@ def get_embeddings(h5_path: Path,
                    per_protein: bool = False,
                    progress: Progress = Progress()
                    ) -> dict[str, torch.Tensor]:
+    # TODO use new dscript dscript/utils/load_hdf5_parallel
     with h5py.File(h5_path, 'r') as h5_file:
         embeddings = dict()
         for prot_id in progress.track(ids, description='read H5'):
