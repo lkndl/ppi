@@ -11,10 +11,10 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from .interaction import InteractionMap, InteractionMapDscript
-from .train_t5 import add_args, train_step, handle_config
-from utils import general_utils as utils
-from utils.dataloader import get_dataloaders_and_ids, get_embeddings
+from interaction import InteractionMap, InteractionMapDscript
+from train_t5 import add_args, train_step, handle_config
+from ppi.utils import general_utils as utils
+from ppi.utils.dataloader import get_dataloaders_and_ids, get_embeddings
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

@@ -14,8 +14,8 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
 from network import Attention, ProjectedAttention, MLP, Linear
-from utils import general_utils as utils
-from utils.dataloader import get_dataloaders_and_ids, get_embeddings
+from ppi.utils import general_utils as utils
+from ppi.utils.dataloader import get_dataloaders_and_ids, get_embeddings
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 

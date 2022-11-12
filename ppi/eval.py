@@ -11,9 +11,9 @@ from tqdm import tqdm
 import pandas as pd
 
 from ppi.metrics import Metrics, Writer, pivot
-from train.interaction import InteractionMap
-from utils import general_utils as utils
-from utils.general_utils import device
+from ppi.train.interaction import InteractionMap
+from ppi.utils import general_utils as utils
+from ppi.utils.general_utils import device
 
 
 class Intervalometer:

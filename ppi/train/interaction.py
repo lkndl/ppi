@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from utils.general_utils import device
+from ppi.utils.general_utils import device
 
 
 class EmbeddingsProjection(nn.Module):

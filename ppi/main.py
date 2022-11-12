@@ -30,10 +30,10 @@ from ppi.config import parse
 from ppi.metrics import Writer, Metrics, pivot
 from ppi.eval import Evaluator, Intervalometer, evaluate_model
 
-from train.interaction import InteractionMap
-from utils import general_utils as utils
-from utils.general_utils import device
-from utils.dataloader import (
+from ppi.train.interaction import InteractionMap
+from ppi.utils import general_utils as utils
+from ppi.utils.general_utils import device
+from ppi.utils.dataloader import (
     DataLoader,
     get_dataloaders_and_ids,
     get_embeddings
@@ -70,7 +70,7 @@ def embed(fasta: Path = 'train.fasta',
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def slice(ctx: typer.Context,
           fasta: Path = 'train.fasta',
-          h5_in: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri.h5',
+          h5_in: Path = '/mnt/project/kaindl/ppi/embed_data/apid_huri.h5',
           h5_out: Path = 'mbeds.h5',
           h5_mode: H5WriteMode = H5WriteMode.exit) -> None:
     cfg = parse(ctx, write=False)
@@ -97,23 +97,25 @@ def slice(ctx: typer.Context,
 
 
 @app.command()
-def scramble(tsv: Path, seed: int = 42) -> None:
+def scramble(tsv: Path, seed: int = 42,
+             no_header: bool = typer.Option(False)) -> None:
     """
     For a PPI dataset as TSV, randomly shuffle CRC hashes,
     i.e. exchange all occurrences of A with B and vice versa.
     Output to STDOUT, re-direct via ">"
     :param tsv: PPI dataset
     :param seed: for reproducible shuffling
+    :param no_header: for a TSV without a header line
     """
-    pairs = pd.read_csv(tsv, sep='\t')  # [['hash_A', 'hash_B', 'label']]
+    pairs = pd.read_csv(tsv, sep='\t', header=[0, None][no_header])  # [['hash_A', 'hash_B', 'label']]
     pair_ids = sorted(set(np.unique(pairs.iloc[:, [0, 1]])))
     rng = np.random.default_rng(seed=seed)
     shuffled_ids = rng.choice(pair_ids, size=len(pair_ids),
                               replace=False, shuffle=True)
     lookup = dict(zip(pair_ids, shuffled_ids)).get
-    pairs.hash_A = pairs.hash_A.apply(lookup)
-    pairs.hash_B = pairs.hash_B.apply(lookup)
-    print(pairs.to_csv(index=False, header=True, sep='\t').rstrip())
+    pairs.iloc[:, 0] = pairs.iloc[:, 0].apply(lookup)
+    pairs.iloc[:, 1] = pairs.iloc[:, 1].apply(lookup)
+    print(pairs.to_csv(index=False, header=not no_header, sep='\t').rstrip())
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
@@ -216,7 +218,7 @@ def evaluate(ctx: typer.Context,
              model: Path = typer.Option('model.tar'),
              pattern: str = '.tar',
              test_tsv: Path = 'in/val_4k.tsv',
-             h5: Path = '/mnt/project/kaindl/ppi/data/embedding/apid_huri_val.h5',
+             h5: Path = '/mnt/project/kaindl/ppi/embed_data/apid_huri_val.h5',
              bst: int = 4,
              ):
     # TODO this would be so much easier from a TSV ...

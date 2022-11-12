@@ -10,8 +10,10 @@ import torchmetrics as tm
 import torchmetrics.classification as tmc
 from torch.utils.tensorboard import SummaryWriter
 
-from utils.general_utils import device
+from ppi.utils.general_utils import device
 
+
+# TODO this is dumb. use a tm.MetricCollection
 
 class Metrics:
     class _prc(tmc.BinaryPrecisionRecallCurve):

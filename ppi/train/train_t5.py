@@ -12,9 +12,9 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from .interaction import InteractionMap, InteractionMapDscript
-from utils import general_utils as utils
-from utils.dataloader import get_training_dataloader, DataLoader
+from interaction import InteractionMap, InteractionMapDscript
+from ppi.utils import general_utils as utils
+from ppi.utils.dataloader import get_training_dataloader, DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
