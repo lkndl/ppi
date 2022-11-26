@@ -98,14 +98,15 @@ def slice(ctx: typer.Context,
 
 @app.command()
 def scramble(tsv: Path, seed: int = 42,
-             no_header: bool = typer.Option(False)) -> None:
+             no_header: bool = typer.Option(False),
+             out_file: Path = typer.Option(None)) -> None:
     """
     For a PPI dataset as TSV, randomly shuffle CRC hashes,
     i.e. exchange all occurrences of A with B and vice versa.
-    Output to STDOUT, re-direct via ">"
     :param tsv: PPI dataset
     :param seed: for reproducible shuffling
     :param no_header: for a TSV without a header line
+    :param out_file: an optional path to write to, else STDOUT
     """
     pairs = pd.read_csv(tsv, sep='\t', header=[0, None][no_header])  # [['hash_A', 'hash_B', 'label']]
     pair_ids = sorted(set(np.unique(pairs.iloc[:, [0, 1]])))
@@ -115,7 +116,11 @@ def scramble(tsv: Path, seed: int = 42,
     lookup = dict(zip(pair_ids, shuffled_ids)).get
     pairs.iloc[:, 0] = pairs.iloc[:, 0].apply(lookup)
     pairs.iloc[:, 1] = pairs.iloc[:, 1].apply(lookup)
-    print(pairs.to_csv(index=False, header=not no_header, sep='\t').rstrip())
+    if out_file is None:
+        print(pairs.to_csv(index=False, header=not no_header, sep='\t').rstrip())
+    else:
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        pairs.to_csv(out_file, index=False, header=not no_header, sep='\t')
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
