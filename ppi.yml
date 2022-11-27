@@ -14,7 +14,7 @@ dependencies:
   - pytorch
   - pyfaidx
   - cd-hit
-  - mmseqs2
+  - mmseqs2=13.4511
   - networkx
   - graph-tool
   - typer=0.6
