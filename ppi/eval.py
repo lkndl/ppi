@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import pandas as pd
 
-from ppi.metrics import Metrics, Writer, pivot
+from ppi.metrics import Metrics, Writer
 from ppi.train.interaction import InteractionMap
 from ppi.utils import general_utils as utils
 from ppi.utils.general_utils import device
@@ -87,15 +87,17 @@ class Evaluator:
         return sum([len(loader) for loader in self.dataloaders.values()])
 
     def __call__(self, train_batch: int = 0):
-        finished, results, times = evaluate_model(
+        preds, results, times = evaluate_model(
             self.model, self.embeddings, self.dataloaders, progress=self.progress)
-        self.writer.add_interval(pivot(results), 'val', train_batch)
+        preds.to_csv(self.cfg.wd / self.cfg.name / f'preds_{train_batch}.tsv',
+                     sep='\t', header=True, index=False)
+        self.writer.add_interval(Metrics.pivot(results), 'val', train_batch)
         self.writer.flush()
         self.checkpoint(file_name=f'chk_eval_{train_batch}.tar',
                         batch=train_batch, eval_results=results)
         self.intervalometer.restart()
         self.model.train()
-        return finished
+        return False
 
     def checkpoint(self, file_name: str, **kwargs):
         # fetch the current dataloader states
