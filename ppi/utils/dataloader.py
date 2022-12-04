@@ -1,13 +1,16 @@
+import multiprocessing as mp
+import secrets
+from functools import partial
 from pathlib import Path
 from typing import Union
 
 import h5py
 import numpy as np
 import pandas as pd
-import secrets
 import torch
-from torch.utils.data import Dataset, DataLoader, Sampler
 from rich.progress import Progress
+from torch.utils.data import Dataset, DataLoader, Sampler
+from tqdm import tqdm
 
 
 class ResumableRandomSampler(Sampler):
@@ -116,12 +119,9 @@ def get_dataloaders_and_ids(tsv_path: Path,
     return (data_loader if separate else loaders), prot_ids
 
 
-def get_embeddings(h5_path: Path,
-                   ids: set,
-                   per_protein: bool = False,
-                   progress: Progress = Progress()
-                   ) -> dict[str, torch.Tensor]:
-    # TODO use new dscript dscript/utils/load_hdf5_parallel
+def get_embeddings_bak(h5_path: Path, ids: set, per_protein: bool = False,
+                       progress: Progress = Progress()
+                       ) -> dict[str, torch.Tensor]:
     with h5py.File(h5_path, 'r') as h5_file:
         embeddings = dict()
         for prot_id in progress.track(ids, description='read H5'):
@@ -131,6 +131,29 @@ def get_embeddings(h5_path: Path,
             else:
                 embeddings[prot_id] = m_bed.unsqueeze(0)
         return embeddings
+
+
+def _hdf5_load_partial_func(k, file_path):
+    with h5py.File(file_path, "r") as fi:
+        emb = torch.from_numpy(fi[k][:, :]).float().unsqueeze(0)
+    return emb
+
+
+def get_embeddings(h5_path: Path, ids: set, n_jobs=-1
+                   ) -> dict[str, torch.Tensor]:
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    ids = sorted(ids)
+
+    if n_jobs == -1:
+        n_jobs = min(mp.cpu_count() // 2, 8)
+
+    with mp.Pool(processes=n_jobs) as pool:
+        all_embs = list(tqdm(pool.imap(
+            partial(_hdf5_load_partial_func, file_path=h5_path), ids
+        ), total=len(ids)))
+
+    embeddings = {k: v for k, v in zip(ids, all_embs)}
+    return embeddings
 
 
 def get_training_dataloader(train_file_path, augment, train_batch_size, train_label_column,
