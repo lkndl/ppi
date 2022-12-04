@@ -6,10 +6,11 @@ from enum import Enum
 from pathlib import Path
 
 import h5py
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pkg_resources
 import rich
+import sys
 import torch
 import torch.nn as nn
 import typer
@@ -26,13 +27,14 @@ from tqdm import tqdm
 
 warnings.simplefilter(action='ignore', category=UserWarning)
 
-from ppi.config import parse
-from ppi.metrics import Writer, Metrics, pivot
+from ppi.config import parse, Config
+from ppi.metrics import Writer, Metrics
 from ppi.eval import Evaluator, Intervalometer, evaluate_model
 
 from ppi.train.interaction import InteractionMap
 from ppi.utils import general_utils as utils
 from ppi.utils.general_utils import device
+from ppi.utils.embed import PLM
 from ppi.utils.dataloader import (
     DataLoader,
     get_dataloaders_and_ids,
@@ -53,18 +55,20 @@ class H5WriteMode(str, Enum):
 @app.command()
 def embed(fasta: Path = 'train.fasta',
           h5_file: Path = 'mbeds.h5',
-          h5_mode: H5WriteMode = H5WriteMode.exit) -> None:
-    seqs = SeqIO.to_dict(SeqIO.parse(fasta, 'fasta'))
-    if not h5_file.is_file():
-        h5_mode = H5WriteMode.overwrite
-    elif h5_mode == H5WriteMode.exit:
+          h5_mode: H5WriteMode = H5WriteMode.exit,
+          per_protein: bool = False,
+          model: PLM = PLM.t5,
+          half: bool = True,
+          cache_dir: Path = None
+          ) -> None:
+    if h5_file.is_file() and h5_mode == H5WriteMode.exit:
         raise FileExistsError(f'H5 file {h5_file} exists. Choose different path, '
                               f'or define append/overwrite mode')
-    # TODO T5 embedder
+    from ppi.utils.embed import get_model, read_fasta, generate_embeddings
 
-    with h5py.File(h5_file, h5_mode) as h5:
-        for seq_id, seq in tqdm(seqs, toal=len(seqs)):
-            pass
+    model, vocab, device = get_model(model, half, cache_dir)
+    seqs = read_fasta(fasta)
+    generate_embeddings(model, vocab, seqs, device, h5_file, per_protein=per_protein)
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
@@ -276,7 +280,7 @@ def evaluate(ctx: typer.Context,
             preds = preds[pred_cols]
             preds_tsv.write(preds.to_csv(header=False, index=False, sep='\t'))
 
-            res = pivot(results)
+            res = Metrics.pivot(results)
             prcs = list()
             for cclass, d in res['prc'].items():
                 df = pd.DataFrame(np.hstack((np.array(d['mean'].clone().cpu()).T,
@@ -315,6 +319,31 @@ def resume(ctx: typer.Context,
     print(f'using device: {device}')
     checkpoint = torch.load(checkpoint, map_location=device)
     train_loop(cfg, use_tqdm, checkpoint)
+
+
+@app.command()
+def publish(model: list[Path] = typer.Option([Path('model.tar')]),
+            pattern: str = '*.tar'
+            ) -> None:
+    models = list()
+    for m in model:
+        m = Path(m)
+
+        def search_dir(d: Path) -> None:
+            for chk in sorted(d.glob(pattern)):
+                models.append(chk)
+
+        if m.is_dir():
+            search_dir(m)
+        elif m.is_file():
+            models.append(m)
+        else:
+            print(f'No model found for {m}', file=sys.stderr)
+
+    for m in tqdm(models):
+        cfg = Config.from_file(m.parent / f'config_{m.parent.stem}.json').process(write=False)
+        model = InteractionMap(**vars(cfg))
+        utils.publish(m, model)
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))

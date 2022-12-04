@@ -59,10 +59,15 @@ def checkpoint(model: nn.Module, optim: Adam,
     model.to(device)
 
 
-def publish(checkpoint_file: Union[str, Path],
-            model: nn.Module, path: Union[str, Path]) -> None:
-    model.load_state_dict(torch.load(checkpoint_file)['model_state_dict'])
-    torch.save(model, Path(path).with_suffix('.pth'))
+def publish(chk: Union[str, Path],
+            model: nn.Module, path: Union[str, Path] = None) -> None:
+    assert (chk := Path(chk)).suffix != '.pt'
+    model.load_state_dict(torch.load(
+        chk, map_location=torch.device('cpu'))['model_state_dict'])
+    scripted = torch.jit.script(model)
+    if path is None:
+        path = chk
+    scripted.save(Path(path).with_suffix('.pt'))
 
 
 def get_architecture(tar: Path) -> str:
@@ -209,7 +214,7 @@ def glob_type(directory: Union[str, Path],
         raise NotADirectoryError
     suffix = suffix.rstrip()
     func = directory.glob if not recursive else directory.rglob
-    files = set(func(f'*{suffix}'))
+    files = set(func(f'*{suffix.lstrip("*")}'))
     if not files:
         if relax:
             return set()

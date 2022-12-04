@@ -2,8 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ppi.utils.general_utils import device
-
 
 class EmbeddingsProjection(nn.Module):
     """Module 1: Projection of embedding dimension"""
@@ -104,7 +102,7 @@ class IMapCNN(nn.Module):
     def __init__(self):
         super(IMapCNN, self).__init__()
         # 1 input image channel, 6 output channels, 5x5 square convolution kernel
-        self.conv1 = nn.Conv2d(1, 6, 5)   # 1, 6, 5 on server
+        self.conv1 = nn.Conv2d(1, 6, 5)  # 1, 6, 5 on server
         self.conv2 = nn.Conv2d(6, 16, 5)  # 6, 16, 5 on server
         # change receptive field via stride + dilation
         # an affine operation: y = Wx + b
@@ -163,8 +161,8 @@ class InteractionMap(nn.Module):
             **kwargs
     ):
         super(InteractionMap, self).__init__()
-        self.embedding = EmbeddingsProjection(1024, emb_projection_dim, dropout_p,  # TODO 1536
-                                              activation=nn.ELU())
+        self.embedding = EmbeddingsProjection(
+            1024, emb_projection_dim, dropout_p, activation=nn.ELU())
 
         self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width,
                                   cnn_activation=nn.Identity())
@@ -199,7 +197,22 @@ class InteractionMap(nn.Module):
         return C, phat
 
     def predict(self, z0, z1):
-        _, phat = self.map_predict(z0, z1)
+        """Can't use `predict_func` forwarding to export a model in TorchScript"""
+        # _, phat = self.map_predict(z0, z1)
+        C = self.cpred(z0, z1)
+        # map real-valued, 2D input to the frequency domain
+        f1 = torch.fft.rfft2(C[0, 0])
+        f1[0, 0] = 0  # this is the average power. We use it to "level" the psd
+        # eliminate very high and very low frequencies
+        for f in [f1.real, f1.imag]:
+            bounds = torch.quantile(
+                f, q=torch.tensor([.05, .95]).to(C), keepdim=False)
+            lower, upper = bounds[0], bounds[1]
+            f[(lower < f) & (f < upper)] = 0
+        # map back to the attention domain
+        cc = torch.fft.irfft2(f1)
+        # pick and limit the max
+        phat = torch.tanh(cc.max()).clamp(min=0, max=1)
         return phat
 
     def gelu_predict(self, z0, z1):
@@ -225,8 +238,9 @@ class InteractionMap(nn.Module):
         f1[0, 0] = 0  # this is the average power. We use it to "level" the psd
         # eliminate very high and very low frequencies
         for f in [f1.real, f1.imag]:
-            lower, upper = torch.quantile(
-                f, q=torch.Tensor([.05, .95]).to(device), keepdim=False)
+            bounds = torch.quantile(
+                f, q=torch.tensor([.05, .95]).to(C), keepdim=False)
+            lower, upper = bounds[0], bounds[1]
             f[(lower < f) & (f < upper)] = 0
         # map back to the attention domain
         cc = torch.fft.irfft2(f1)
