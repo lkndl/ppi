@@ -1,14 +1,44 @@
 #!/usr/bin/env python3
 
 import time
+from enum import Enum
 from pathlib import Path
-from time import perf_counter
 
 import h5py
 import numpy as np
 import torch
 import tqdm
-from transformers import T5Tokenizer, T5EncoderModel
+
+
+class PLM(str, Enum):
+    t5 = 't5'
+    bert = 'bert'
+
+
+def get_model(model_type: PLM = PLM.t5, half: bool = True, cache_dir: Path = None):
+    if model_type == 't5':
+        from transformers import T5EncoderModel, T5Tokenizer
+        encoder, tokenizer, transformer_link = \
+            T5EncoderModel, T5Tokenizer, 'Rostlab/prot_t5_xl_half_uniref50-enc'
+    else:
+        from transformers import BertModel, BertTokenizer
+        encoder, tokenizer, transformer_link = \
+            BertModel, BertTokenizer, 'Rostlab/prot_bert_bfd'
+
+    cache_dir = cache_dir or ('t5_xl_weights' if model_type.value == 't5'
+                              else 'prot_bert_bfd_weights')
+    print(f'Loading {model_type.upper()} from: {cache_dir}')
+    print(f'Using huggingface from: {transformer_link}')
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    kwargs = dict(torch_dtype=torch.float16) if half else dict()
+    model = encoder.from_pretrained(transformer_link, cache_dir=cache_dir, **kwargs)
+    model = model.to(device)
+    model = model.eval()
+    vocab = tokenizer.from_pretrained(transformer_link,
+                                      do_lower_case=False,
+                                      cache_dir=cache_dir)
+    return model, vocab, device
 
 
 def read_fasta(fasta_path: Path, split_char='!', id_field=0):
@@ -43,36 +73,25 @@ def read_fasta(fasta_path: Path, split_char='!', id_field=0):
     return seqs
 
 
-def save_embeddings(emb_dict: dict, out_path: Path, mode: str = 'w'):
-    with h5py.File(str(out_path), mode) as hf:
-        for sequence_id, embedding in emb_dict.items():
-            hf.create_dataset(sequence_id, data=embedding)
-    return None
-
-
-def get_T5_model():
-    """Load ProtT5 in half-precision (more specifically: the encoder-part of ProtT5-XL-U50)"""
-    model = T5EncoderModel.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc')
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)  # move model to GPU
-    model = model.eval()  # set model to evaluation model
-    tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
-    return model, tokenizer, device
-
-
-def get_embeddings(model, tokenizer, seqs, device,
-                   max_residues=4000, max_seq_len=1500, max_batch=100):
+def generate_embeddings(model, tokenizer, seqs, device, h5_file: Path = None,
+                        per_protein: bool = False, keep_in_memory: bool = True,
+                        max_residues=4000, max_seq_len=1500, max_batch=100):
     """
     Generate embeddings via batch-processing
     :param model:
     :param tokenizer:
     :param seqs:
+    :param per_protein: average over the sequence length - or don't
     :param max_residues: the upper limit of residues within one batch
     :param max_seq_len: the upper sequence length for applying batch-processing
     :param max_batch: the upper number of sequences per batch
     :return:
     """
     emb_dict = dict()
+    bunch = dict()
+    counter = 0
+    if not h5_file and not keep_in_memory:
+        raise RuntimeError('Specified neither an output file nor to keep embeddings in RAM!')
 
     # sort sequences according to length (reduces unnecessary padding --> speeds up embedding)
     seq_dict = sorted(seqs.items(), key=lambda kv: len(seqs[kv[0]]), reverse=True)
@@ -89,11 +108,12 @@ def get_embeddings(model, tokenizer, seqs, device,
         n_res_batch = sum([s_len for _, _, s_len in batch]) + seq_len
         if len(batch) >= max_batch or n_res_batch >= max_residues \
                 or seq_idx == len(seq_dict) or seq_len > max_seq_len:
-            pdb_ids, seqs, seq_lens = zip(*batch)
+            pdb_ids, batch_seqs, seq_lens = zip(*batch)
             batch = list()
 
             # add_special_tokens adds extra token at the end of each sequence
-            token_encoding = tokenizer.batch_encode_plus(seqs, add_special_tokens=True, padding='longest')
+            token_encoding = tokenizer.batch_encode_plus(
+                batch_seqs, add_special_tokens=True, padding='longest')
             input_ids = torch.tensor(token_encoding['input_ids']).to(device)
             attention_mask = torch.tensor(token_encoding['attention_mask']).to(device)
 
@@ -111,13 +131,37 @@ def get_embeddings(model, tokenizer, seqs, device,
                 emb = embedding_repr.last_hidden_state[batch_idx, :s_len]
 
                 # store per-residue embeddings (Lx1024)
-                emb_dict[identifier] = emb.detach().cpu().numpy().squeeze()
+                emb = emb.detach().cpu().numpy().squeeze()
+                if per_protein:
+                    # or a per-protein embedding (1x1024)
+                    emb = emb.mean(0)
+                bunch[identifier] = emb
+                counter += 1
+
+        if len(bunch) > 200:
+            if h5_file:
+                save_embeddings(bunch, h5_file)
+            if keep_in_memory:
+                emb_dict |= bunch
+            bunch = dict()
+    if keep_in_memory:
+        emb_dict |= bunch
+    if h5_file:
+        save_embeddings(bunch, h5_file)
 
     passed_time = time.time() - start
-    avg_time = passed_time / len(emb_dict)
-    print(f'Total number of per-residue embeddings: {len(emb_dict)}')
-    print(f'Time for generating embeddings: {passed_time / 60:.1f}[m] ({avg_time:.3f}[s/protein])')
+    avg_time = passed_time / counter
+    print(f'Total number of per-residue embeddings: {counter}')
+    print(f'Time for generating embeddings: {passed_time / 60:.1f}[m]'
+          f' ({avg_time:.3f}[s/protein])')
     return emb_dict
+
+
+def save_embeddings(emb_dict: dict, out_path: Path, mode: str = 'a'):
+    with h5py.File(str(out_path), mode) as hf:
+        for sequence_id, embedding in emb_dict.items():
+            hf.create_dataset(sequence_id, data=embedding)
+    return None
 
 
 if __name__ == '__main__':
@@ -150,7 +194,6 @@ if __name__ == '__main__':
     print(f'Generate {len(all_needed_ids)} new embeddings')
     seqs = {k: v for k, v in seqs.items() if k in all_needed_ids}
     print('Loading model')
-    model, tokenizer, device = get_T5_model()
+    model, tokenizer, device = get_model()
     print('Start embedding')
-    results = get_embeddings(model, tokenizer, seqs, device)
-    save_embeddings(results, out_h5, 'a')
+    _ = generate_embeddings(model, tokenizer, seqs, device, out_h5)
