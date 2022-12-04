@@ -189,7 +189,7 @@ class Writer(SummaryWriter):
                               x='recall', y='precision',
                               hue='cclass',
                               aspect=1, height=2.8,
-                              ci=None, drawstyle='steps-post')
+                              errorbar=None, drawstyle='steps-post')
             t = [0, .25, .5, .75, 1]
             tl = ['0', '.25', '.5', '.75', '1']
             fig.set(xlabel='recall', ylabel='precision', box_aspect=1,
