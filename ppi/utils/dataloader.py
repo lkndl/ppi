@@ -119,7 +119,7 @@ def get_dataloaders_and_ids(tsv_path: Path,
     return (data_loader if separate else loaders), prot_ids
 
 
-def get_embeddings_bak(h5_path: Path, ids: set, per_protein: bool = False,
+def get_embeddings(h5_path: Path, ids: set, per_protein: bool = False,
                        progress: Progress = Progress()
                        ) -> dict[str, torch.Tensor]:
     with h5py.File(h5_path, 'r') as h5_file:
@@ -139,7 +139,7 @@ def _hdf5_load_partial_func(k, file_path):
     return emb
 
 
-def get_embeddings(h5_path: Path, ids: set, n_jobs=-1
+def get_embeddings_new(h5_path: Path, ids: set, n_jobs=-1
                    ) -> dict[str, torch.Tensor]:
     torch.multiprocessing.set_sharing_strategy('file_system')
     ids = sorted(ids)
