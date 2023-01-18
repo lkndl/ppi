@@ -6,7 +6,7 @@ requires = [
 build-backend = 'setuptools.build_meta'
 
 [tool.setuptools]
-packages = ['ppi', 'ppi_utils']
+packages = ['ppi']
 
 # [build-system]
 # requires = ['poetry-core>=1.0.0']
@@ -27,6 +27,7 @@ python = '^3.9.7'
 pytorch = '^1.0.2'
 torch = '^1.11.0'
 biopython = '^1.79'
+ppi_utils = { git = "https://github.com/lkndl/ppi_utils.git" }
 
 # [tool.poetry.dev-dependencies]
 
