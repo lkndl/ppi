@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+import os
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = "TRUE"
+
 import time
 from enum import Enum
 from pathlib import Path
@@ -92,6 +96,13 @@ def generate_embeddings(model, tokenizer, seqs, device, h5_file: Path = None,
     counter = 0
     if not h5_file and not keep_in_memory:
         raise RuntimeError('Specified neither an output file nor to keep embeddings in RAM!')
+    if h5_file and (h5 := Path(h5_file)).is_file():
+        with h5py.File(h5, 'r') as open_h5:
+            existing_keys = list(open_h5.keys())
+        found, missing = set(seqs) & set(existing_keys), set(seqs) - set(existing_keys)
+        if missing:
+            print(f'Found {len(found)} keys already, generate {len(missing)} missing ones')
+            seqs = {k: v for k, v in seqs.items() if k not in existing_keys}
 
     # sort sequences according to length (reduces unnecessary padding --> speeds up embedding)
     seq_dict = sorted(seqs.items(), key=lambda kv: len(seqs[kv[0]]), reverse=True)

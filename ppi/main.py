@@ -31,7 +31,8 @@ from ppi.config import parse, Config
 from ppi.metrics import Writer, Metrics
 from ppi.eval import Evaluator, Intervalometer, evaluate_model
 
-from ppi.train.interaction import InteractionMap
+from ppi.train.interaction import InteractionModel
+
 from ppi.utils import general_utils as utils
 from ppi.utils.general_utils import device
 from ppi.utils.embed import PLM
@@ -180,7 +181,7 @@ class WriteMode(str, Enum):
 
 # @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def predict(ctx: typer.Context,
-            model: InteractionMap, dataloader: DataLoader,
+            model: InteractionModel, dataloader: DataLoader,
             embeddings: dict[str, torch.Tensor],
             mode: WriteMode = WriteMode.none, cclass: str = '',
             ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -209,7 +210,7 @@ def predict(ctx: typer.Context,
             for _n0, _n1, _y in zip(n0, n1, labels):
                 z_a = embeddings[_n0].to(device)
                 z_b = embeddings[_n1].to(device)
-                p_hat = model.predict_func(z_a, z_b)
+                _, p_hat = model.map_predict(z_a, z_b)
 
                 if mode.value in 'wa':
                     line = f'{batch}\t{_n0}\t{_n1}{cclass}{_y.item()}\t{p_hat.item():.4f}\n'
@@ -261,7 +262,7 @@ def evaluate(ctx: typer.Context,
             idx = int(idx) if idx.isnumeric() else 0
             arc = utils.get_architecture(path)
 
-            model = InteractionMap(**vars(cfg) | dict(architecture=arc))
+            model = InteractionModel(**vars(cfg) | dict(architecture=arc))
             if path.suffix == '.tar':
                 checkpoint = torch.load(path, map_location=device)
                 model.load_state_dict(checkpoint['model_state_dict'], strict=False)
@@ -342,7 +343,7 @@ def publish(model: list[Path] = typer.Option([Path('model.tar')]),
 
     for m in tqdm(models):
         cfg = Config.from_file(m.parent / f'config_{m.parent.stem}.json').process(write=False)
-        model = InteractionMap(**vars(cfg))
+        model = InteractionModel(**vars(cfg))
         utils.publish(m, model)
 
 
@@ -354,7 +355,7 @@ def train(ctx: typer.Context,
           use_tqdm: bool = typer.Option(True),
           ) -> None:
     cfg = parse(ctx)
-    print(f'using device: {device}')
+    print(f'T5 PPI v{__version__}\nusing device: {device}')
     train_loop(cfg, use_tqdm=use_tqdm)
 
 
@@ -392,11 +393,11 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         _print(f'write to: {cfg.wd / cfg.name}')
         batch, epoch, finished = 0, 0, False
 
-        model = InteractionMap(**vars(cfg))
+        model = InteractionModel(**vars(cfg))
         params = [p for p in model.parameters() if p.requires_grad]
         optim = Adam(params, lr=cfg.lr, weight_decay=0)
         model.to(device)
-        _print('model loaded')
+        _print(f'model {"loaded" if checkpoint is not None else "initialized"}')
 
         dataloader, seq_ids = get_dataloaders_and_ids(
             cfg.train_tsv, cfg.batch_size, augment=cfg.augment,
@@ -404,8 +405,8 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         val_loaders, val_seq_ids = get_dataloaders_and_ids(
             cfg.val_tsv, cfg.batch_size, augment=cfg.augment,
             shuffle=cfg.shuffle, seed=cfg.seed, split_column='cclass')
-        embeddings = get_embeddings(cfg.h5, seq_ids | val_seq_ids)
         _print('data loaded')
+        embeddings = get_embeddings(cfg.h5, seq_ids | val_seq_ids)
 
         metrics = Metrics()
         intervalometer = Intervalometer(cfg, dataloader, val_loaders)
@@ -434,6 +435,7 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         for epoch in epoch_tracker(range(epoch, cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
+            print(f'ppi weight {model.ppi_weight} and acc {model.accuracy_weight}')
 
             if use_tqdm:
                 b_kwargs |= dict(desc=f'epoch {epoch + 1}/{cfg.epochs}',
@@ -443,22 +445,27 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 b_kwargs |= dict(task_id=batch_task_id)
 
             for n0, n1, labels in batch_tracker(dataloader, **b_kwargs):
-                preds = list()
+                preds, cmaps = list(), list()
                 for _n0, _n1 in zip(n0, n1):
                     z_a = embeddings[_n0].to(device)
                     z_b = embeddings[_n1].to(device)
 
-                    p_hat = model.predict_func(z_a, z_b)
-                    preds.append(p_hat.flatten(0))
+                    cm, p_hat = model.map_predict(z_a, z_b)
+                    preds.append(p_hat.float().flatten(0))
+                    cmaps.append(torch.mean(cm))
 
                 preds = torch.cat(preds).to(device)
                 labels = labels.float().to(device)
 
-                w = 1 + labels * (cfg.ppi_weight - 1)
-                loss = nn.BCELoss(weight=w)(preds, labels)
+                w = 1 + labels * (model.ppi_weight - 1)
+                bce_loss = nn.BCELoss(weight=w)(preds, labels)
+                representation_loss = torch.mean(torch.stack(cmaps, 0))
+                loss = (model.accuracy_weight * bce_loss) + (
+                        (1 - model.accuracy_weight) * representation_loss)
 
                 batch_metrics = metrics(preds, labels, loss)
-                writer.add_interval(batch_metrics, 'batch', batch)
+                if not batch % 20:
+                    writer.add_interval(batch_metrics, 'batch', batch)
 
                 loss.backward()
                 optim.step()
@@ -481,7 +488,7 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                                  epoch=epoch, epoch_metrics=epoch_metrics)
 
         if finished:
-            utils.publish(cfg.wd / cfg.name / 'chk_best.tar', InteractionMap(**vars(cfg)),
+            utils.publish(cfg.wd / cfg.name / 'chk_best.tar', InteractionModel(**vars(cfg)),
                           cfg.wd / cfg.name / f'chk_best_{batch}.pth')
             _print(f'stopped training after epoch {epoch + 1} batch {batch}')
 

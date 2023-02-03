@@ -102,11 +102,12 @@ class Metrics:
         if loss is not None:
             d['loss'] = self.loss(loss.clone().detach())
         p_d = dict()
-        for i, metric in enumerate([self.p0, self.p1]):
+        for i, (metric, name) in enumerate(zip([self.p0, self.p1], ['neg', 'pos'])):
             t = preds[labels == i]
             if not t.numel():
                 continue
             p_d[str(i)] = metric(t)
+            d[name] = t
         if p_d:
             d['p_hat'] = p_d
         if 'aupr' in d and torch.isnan(d['aupr']) and not keep_all:
@@ -207,7 +208,10 @@ class Writer(SummaryWriter):
         d.pop('prc', None)
 
         for k, v in d.items():
-            if type(v) != dict:
+            if k in ['neg', 'pos']:
+                if interval != 'batch' or not idx % 100:
+                    self.add_histogram(f'p_hat_{k}/{interval}', v, idx)
+            elif type(v) != dict:
                 self.add_scalar(f'{k}/{interval}', v, idx)
-            else:
+            elif k != 'p_hat':
                 self.add_scalars(f'{k}/{interval}', v, idx)

@@ -8,7 +8,6 @@ import h5py
 import numpy as np
 import pandas as pd
 import torch
-from rich.progress import Progress
 from torch.utils.data import Dataset, DataLoader, Sampler
 from tqdm import tqdm
 
@@ -120,11 +119,10 @@ def get_dataloaders_and_ids(tsv_path: Path,
 
 
 def get_embeddings(h5_path: Path, ids: set, per_protein: bool = False,
-                       progress: Progress = Progress()
-                       ) -> dict[str, torch.Tensor]:
+                   ) -> dict[str, torch.Tensor]:
     with h5py.File(h5_path, 'r') as h5_file:
         embeddings = dict()
-        for prot_id in progress.track(ids, description='read H5'):
+        for prot_id in tqdm(ids, desc='read H5'):
             m_bed = torch.from_numpy(h5_file[prot_id][:, :]).float()
             if per_protein:
                 embeddings[prot_id] = m_bed.mean(dim=0).unsqueeze(0).unsqueeze(0)
@@ -140,7 +138,7 @@ def _hdf5_load_partial_func(k, file_path):
 
 
 def get_embeddings_new(h5_path: Path, ids: set, n_jobs=-1
-                   ) -> dict[str, torch.Tensor]:
+                       ) -> dict[str, torch.Tensor]:
     torch.multiprocessing.set_sharing_strategy('file_system')
     ids = sorted(ids)
 

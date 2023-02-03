@@ -2,25 +2,35 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from dscript.models.embedding import FullyConnectedEmbed
+from dscript.models.contact import ContactCNN
+from dscript.models.interaction import ModelInteraction
 
-class EmbeddingsProjection(nn.Module):
-    """Module 1: Projection of embedding dimension"""
 
-    def __init__(self, nin=1024, nout=100, dropout=0.1, activation=nn.ELU()):
-        super(EmbeddingsProjection, self).__init__()
-        self.nin = nin
-        self.nout = nout
-        self.dropout_p = dropout
+class InteractionModel(ModelInteraction):
+    """Combine new D-SCRIPT code into a single class"""
 
-        self.transform = nn.Linear(nin, nout)
-        self.drop = nn.Dropout(p=self.dropout_p)
-        self.activation = activation
-
-    def forward(self, x):
-        t = self.transform(x)
-        t = self.activation(t)
-        t = self.drop(t)
-        return t
+    def __init__(
+            self,
+            emb_projection_dim: int = 100,
+            dropout_p: float = .1,
+            map_hidden_dim: int = 50,
+            kernel_width: int = 7,
+            ppi_weight: float = 10.,
+            accuracy_weight: float = .35,
+            **kwargs
+    ):
+        embedding = FullyConnectedEmbed(nin=1024,
+                                        nout=emb_projection_dim,
+                                        dropout=dropout_p)
+        contact = ContactCNN(embed_dim=emb_projection_dim,
+                             hidden_dim=map_hidden_dim,
+                             width=kernel_width)
+        super().__init__(embedding, contact,
+                         use_cuda=kwargs.pop('use_cuda', True),
+                         **kwargs)
+        self.ppi_weight = ppi_weight
+        self.accuracy_weight = accuracy_weight
 
 
 class MapProjection(nn.Module):
@@ -50,51 +60,6 @@ class MapProjection(nn.Module):
         b = self.batchnorm(b)
 
         return b
-
-
-class ContactCNN(nn.Module):
-    def __init__(self, embed_dim=100, hidden_dim=50, width=7,
-                 projection_activation=nn.ELU(),
-                 cnn_activation=nn.Sigmoid()):
-        super(ContactCNN, self).__init__()
-
-        self.hidden = MapProjection(embed_dim, hidden_dim,
-                                    activation=nn.ELU())
-        self.proj_activation = projection_activation
-        self.conv = nn.Conv2d(hidden_dim, 1, width, padding=width // 2)
-        self.batchnorm = nn.BatchNorm2d(1)
-        self.cnn_activation = cnn_activation
-
-    def forward(self, z0, z1):
-        B = self.hidden(z0, z1)
-        B = self.proj_activation(B)
-        C = self.conv(B)
-        C = self.batchnorm(C)
-        C = self.cnn_activation(C)
-        return C
-
-
-class ContactCNNDscript(nn.Module):
-    def __init__(self, embed_dim=100, hidden_dim=50, width=7,
-                 cnn_activation=nn.Sigmoid()):
-        super(ContactCNNDscript, self).__init__()
-
-        self.hidden = MapProjection(embed_dim, hidden_dim, activation=nn.ReLU())
-        self.conv = nn.Conv2d(hidden_dim, 1, width, padding=width // 2)
-        self.batchnorm = nn.BatchNorm2d(1)
-        self.cnn_activation = cnn_activation
-        self.clip()
-
-    def clip(self):
-        w = self.conv.weight
-        self.conv.weight.data[:] = 0.5 * (w + w.transpose(2, 3))
-
-    def forward(self, z0, z1):
-        B = self.hidden(z0, z1)
-        C = self.conv(B)
-        C = self.batchnorm(C)
-        C = self.cnn_activation(C)
-        return C
 
 
 class IMapCNN(nn.Module):
@@ -129,7 +94,7 @@ class MultiheadAttention(nn.Module):
     def __init__(self, embed_dim: int = 100,
                  dropout: float = .1):
         super().__init__()
-        self.embed = EmbeddingsProjection(nout=embed_dim)
+        self.embed = FullyConnectedEmbed(nout=embed_dim, dropout=.1)
         self.multihead_attn = nn.MultiheadAttention(
             2 * embed_dim, num_heads=embed_dim, dropout=dropout)
 
@@ -161,11 +126,12 @@ class InteractionMap(nn.Module):
             **kwargs
     ):
         super(InteractionMap, self).__init__()
-        self.embedding = EmbeddingsProjection(
-            1024, emb_projection_dim, dropout_p, activation=nn.ELU())
-
+        self.embedding = FullyConnectedEmbed(nin=1024,
+                                             nout=emb_projection_dim,
+                                             dropout=dropout_p,
+                                             activation=nn.ELU())
         self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width,
-                                  cnn_activation=nn.Identity())
+                                  activation=nn.Identity())
 
         self.maxPool = nn.MaxPool2d(pool_size, padding=pool_size // 2)
         self.gamma = nn.Parameter(torch.FloatTensor([gamma_init]))
@@ -276,7 +242,7 @@ class InteractionMapDscript(InteractionMap):
             gamma_init,
             activation)
         self.use_w = use_w
-        self.contact = ContactCNNDscript(emb_projection_dim, map_hidden_dim, kernel_width)
+        self.contact = ContactCNN(emb_projection_dim, map_hidden_dim, kernel_width)
         if self.use_w:
             self.theta = nn.Parameter(torch.FloatTensor([theta_init]))
             self.lambda_ = nn.Parameter(torch.FloatTensor([lambda_init]))

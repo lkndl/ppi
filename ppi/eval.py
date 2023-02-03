@@ -11,7 +11,7 @@ from tqdm import tqdm
 import pandas as pd
 
 from ppi.metrics import Metrics, Writer
-from ppi.train.interaction import InteractionMap
+from ppi.train.interaction import InteractionModel
 from ppi.utils import general_utils as utils
 from ppi.utils.general_utils import device
 
@@ -63,7 +63,7 @@ class Evaluator:
     impatience: int = 0
     patience: int = 20
 
-    def __init__(self, cfg, model: InteractionMap = None,
+    def __init__(self, cfg, model: InteractionModel = None,
                  optim: Adam = None, writer: Writer = None,
                  train_loader: DataLoader = None,
                  dataloaders: dict[str, DataLoader] = None,
@@ -132,15 +132,14 @@ def evaluate_model(model, embeddings, dataloaders,
             metrics = Metrics(bootstraps)
             start_time = perf_counter()
             for n0, n1, labels in tracker(dataloader, **tracker_kwargs):
-                preds = list()
+                preds, cmaps = list(), list()
                 for _n0, _n1 in zip(n0, n1):
                     z_a = embeddings[_n0].to(device)
                     z_b = embeddings[_n1].to(device)
-                    all_A.append(_n0)
-                    all_B.append(_n1)
 
-                    p_hat = model.predict_func(z_a, z_b)
-                    preds.append(p_hat.flatten(0))
+                    cm, p_hat = model.map_predict(z_a, z_b)
+                    preds.append(p_hat.float().flatten(0))
+                    cmaps.append(torch.mean(cm))
 
                 preds = torch.cat(preds).to(device)
                 labels = labels.float().to(device)
@@ -149,7 +148,10 @@ def evaluate_model(model, embeddings, dataloaders,
                 all_cc.extend([cclass] * len(labels))
 
                 w = 1 + labels * (model.ppi_weight - 1)
-                loss = nn.BCELoss(weight=w)(preds, labels)
+                bce_loss = nn.BCELoss(weight=w)(preds, labels)
+                representation_loss = torch.mean(torch.stack(cmaps, 0))
+                loss = (model.accuracy_weight * bce_loss) + (
+                        (1 - model.accuracy_weight) * representation_loss)
 
                 metrics(preds, labels, loss, keep_all=True)
 

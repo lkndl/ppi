@@ -14,7 +14,7 @@ dependencies:
   - pytorch
   - pyfaidx
   - cd-hit
-  - mmseqs2=13.4511
+  - mmseqs2=13.45111
   - networkx
   - graph-tool
   - typer=0.6
@@ -31,7 +31,7 @@ dependencies:
   - seaborn=0.12
   - dataclass-wizard
   - pip:
-    - "git+https://github.com/lkndl/ppi_utils"
+    - "git+https://github.com/Rostlab/ppi_utils"
     - numpy
     - deepblast
     - tensorboard

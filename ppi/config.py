@@ -146,8 +146,9 @@ class TrainParams(SnakeConfig):
     lr: float = .001
     seed: int = 42  # np.random.default_rng().integers(0, 9999)
     epochs: int = 2
-    batch_size: int = 11
+    batch_size: int = 110
     ppi_weight: float = 10.
+    accuracy_weight: float = .35
     patience: int = 20
     augment: bool = True
     shuffle: bool = True
