@@ -1,0 +1,25 @@
+Index: foldseek_3Di.sh
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/foldseek_3Di.sh b/foldseek_3Di.sh
+new file mode 100644
+--- /dev/null	(date 1674663501231)
++++ b/foldseek_3Di.sh	(date 1674663501231)
+@@ -0,0 +1,15 @@
++#!/bin/bash -e
++source /mnt/lsf-nas-1/os-shared/anaconda3/etc/profile.d/conda.sh
++conda activate kaindl_ppi
++
++mkdir -p leo_ppi_huri_test
++
++COLAB=/mnt/home/mheinzinger/deepppi1tb/collabfold/leo_ppi_huri_test
++
++for ((i = 1 ; i < 6 ; i++)); do
++	foldseek createdb $COLAB/results_chunk_$i/predictions/*_unrelaxed_rank_1_model_*.pdb leo_ppi_huri_test/chunk_$i
++	foldseek prefixid leo_ppi_huri_test/chunk_$i leo_ppi_huri_test/chunk_$i.tsv --tsv
++done
++
++# foldseek createdb *.pdb leo/colab
++# foldseek prefixid leo/colab leo.tsv --tsv

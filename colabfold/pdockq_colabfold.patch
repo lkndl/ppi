@@ -1,0 +1,204 @@
+Index: src/rewrite_af_pdb.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/rewrite_af_pdb.py b/src/rewrite_af_pdb.py
+--- a/src/rewrite_af_pdb.py	(revision ea0a205db593ee6d576fedf0904fdca2bc28a62a)
++++ b/src/rewrite_af_pdb.py	(date 1674563331934)
+@@ -87,17 +87,16 @@
+             atomc+=1
+ 
+ 
+-
+-
+-################MAIN###############
+-#Parse args
+-args = parser.parse_args()
+-#Data
+-pdbfile = args.pdbfile[0]
+-l1 = args.l1[0]
+-outname = args.outname[0]
++if __name__ == '__main__':
++    ################MAIN###############
++    #Parse args
++    args = parser.parse_args()
++    #Data
++    pdbfile = args.pdbfile[0]
++    l1 = args.l1[0]
++    outname = args.outname[0]
+ 
+-#Read PDB
+-chains = read_all_chains_coords(pdbfile)
+-#Rewrite the files
+-write_pdb(chains['A'], l1, outname)
++    #Read PDB
++    chains = read_all_chains_coords(pdbfile)
++    #Rewrite the files
++    write_pdb(chains['A'], l1, outname)
+Index: src/pdockq.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/pdockq.py b/src/pdockq.py
+--- a/src/pdockq.py	(revision ea0a205db593ee6d576fedf0904fdca2bc28a62a)
++++ b/src/pdockq.py	(date 1674563351697)
+@@ -114,19 +114,21 @@
+     return pdockq, ppv
+ 
+ 
+-#################MAIN####################
++if __name__ == '__main__':
++
++    #################MAIN####################
+ 
+-#Parse args
+-args = parser.parse_args()
+-#Read chains
+-chain_coords, chain_plddt = read_pdb(args.pdbfile[0])
+-#Check chains
+-if len(chain_coords.keys())<2:
+-    print('Only one chain in pdbfile', args.pdbfile[0])
+-    sys.exit()
++    #Parse args
++    args = parser.parse_args()
++    #Read chains
++    chain_coords, chain_plddt = read_pdb(args.pdbfile[0])
++    #Check chains
++    if len(chain_coords.keys())<2:
++        print('Only one chain in pdbfile', args.pdbfile[0])
++        sys.exit()
+ 
+-#Calculate pdockq
+-t=8 #Distance threshold, set to 8 Å
+-pdockq, ppv = calc_pdockq(chain_coords, chain_plddt, t)
+-print('pDockQ =',np.round(pdockq,3),'for',args.pdbfile[0])
+-print('This corresponds to a PPV of at least', ppv)
++    #Calculate pdockq
++    t=8 #Distance threshold, set to 8 Å
++    pdockq, ppv = calc_pdockq(chain_coords, chain_plddt, t)
++    print('pDockQ =',np.round(pdockq,3),'for',args.pdbfile[0])
++    print('This corresponds to a PPV of at least', ppv)
+Index: leo_pdockq.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/leo_pdockq.py b/leo_pdockq.py
+new file mode 100644
+--- /dev/null	(date 1674567939800)
++++ b/leo_pdockq.py	(date 1674567939800)
+@@ -0,0 +1,112 @@
++import json
++from pathlib import Path
++from typing import Iterable
++
++import pandas as pd
++import tqdm
++
++from src.pdockq import read_pdb, calc_pdockq
++
++
++def fetch_mapping_from_msas(
++        mh_dir: Path, chunks: Iterable) -> pd.DataFrame:
++    assert mh_dir.is_dir()
++    mapping = list()
++    tqdm.tqdm.write('fetch mapping:')
++    for chunk in chunks:
++        cd = dict()
++        for a3m in tqdm.tqdm(list(
++                (mh_dir / f'results_chunk_{chunk}').glob('*.a3m')), desc=f'chunk_{chunk}'):
++            query = int(a3m.stem)
++            with a3m.open('r') as msa:
++                line = msa.readline().strip()
++                assert line.startswith('#')
++                lena, lenb = [int(j) for j in line[1:].split('\t')[0].split(',')]
++                ida, idb = msa.readline().strip()[1:].split('\t')[0].split('_')
++                cd[query] = ida, idb, lena, lenb
++        cd = pd.DataFrame.from_dict(cd, orient='index', columns=['ida', 'idb', 'lena', 'lenb']).reset_index()
++        cd['chunk'] = chunk
++        mapping.append(cd)
++    return pd.concat(mapping).sort_values(by=['chunk', 'index'])
++
++
++def fetch_labels_from_ppi_tsv(ppi_dir: Path) -> pd.DataFrame:
++    assert ppi_dir.is_dir()
++    tqdm.tqdm.write('fetch labels:')
++    pairs = pd.read_csv(
++        ppi_dir / '1:1_small' / 'huri_test.tsv', sep='\t')[
++        ['hash_A', 'hash_B', 'label']].rename(columns=dict(
++        hash_A='ida', hash_B='idb'))
++    return pairs
++
++
++def fetch_iptm_scores_from_jsons(mh_dir: Path, chunks: Iterable) -> pd.DataFrame:
++    assert mh_dir.is_dir()
++    tqdm.tqdm.write('fetch iptm scores:')
++    scores = list()
++    for chunk in chunks:
++        sd = dict()
++        for f in tqdm.tqdm(list(
++                (mh_dir / f'results_chunk_{chunk}/predictions'
++                ).glob('*_unrelaxed_rank_1_model_*.json')),
++                desc=f'chunk_{chunk}'):
++            query, *_, model, _ = f.stem.split('_')
++            with open(f, 'r') as json_file:
++                js = json.load(json_file)
++            sd[int(query)] = int(model), js['ptm'], js['iptm']
++        sd = pd.DataFrame.from_dict(
++            sd, orient='index',
++            columns=['model', 'ptm', 'iptm']).reset_index()
++        sd['chunk'] = chunk
++        scores.append(sd)
++    return pd.concat(scores)
++
++
++def fetch_pdockq(mh_dir: Path, chunks: Iterable) -> pd.DataFrame:
++    assert mh_dir.is_dir()
++    t = 8  # Distance threshold, set to 8 Å
++    all_qs = list()
++    tqdm.tqdm.write('fetch pDockQ values:')
++    for chunk in chunks:
++        qd = dict()
++        for pdbname in tqdm.tqdm(list(
++                (mh_dir / f'results_chunk_{chunk}/predictions'
++                ).glob('*_unrelaxed_rank_1_model_*.pdb')),
++                desc=f'chunk_{chunk}'):
++            chain_coords, chain_plddt = read_pdb(pdbname)
++            if len(chain_coords.keys()) != 2:
++                print(f'Not exactly two chains in PDB file {pdbname}: {chain_coords.keys()}')
++                continue
++            pdockq, ppv = calc_pdockq(chain_coords, chain_plddt, t)
++            query, *_, model = pdbname.stem.split('_')
++            qd[int(query)] = int(model), pdockq, ppv
++        qd = pd.DataFrame.from_dict(
++            qd, orient='index',
++            columns=['model', 'pdockq', 'ppv']).reset_index()
++        qd['chunk'] = chunk
++        all_qs.append(qd)
++    return pd.concat(all_qs)
++
++
++if __name__ == '__main__':
++    mh_dir = Path('/mnt/home/mheinzinger/deepppi1tb/collabfold/leo_ppi_huri_test/')
++    ppi_dir = Path('/mnt/project/kaindl/ppi/ppi_data/v2.1')
++    chunks = list(range(1, 6))
++
++    mapping = fetch_mapping_from_msas(mh_dir, chunks)
++    ppi_labels = fetch_labels_from_ppi_tsv(ppi_dir)
++    df = pd.merge(mapping, ppi_labels, on=['ida', 'idb'])
++
++    scores = fetch_iptm_scores_from_jsons(mh_dir, chunks)
++    df = pd.merge(df, scores, on=['index', 'chunk'])
++
++    pdockqs = fetch_pdockq(mh_dir, chunks)
++    df = pd.merge(df, pdockqs, on=['index', 'chunk'])
++    if 'model_x' in df.columns and 'model_y' in df.columns:
++        df = df.rename(columns=dict(model_x='model'))
++        df = df.drop(columns=['model_y'], errors='ignore')
++
++    Path('leo_ppi_huri_test').mkdir(parents=True, exist_ok=True)
++    df.to_csv('leo_ppi_huri_test/pdockqs.tsv', sep='\t', header=True, index=False)
++    # df.to_csv(mh_dir / 'pdockqs.tsv', sep='\t', header=True, index=False)
++

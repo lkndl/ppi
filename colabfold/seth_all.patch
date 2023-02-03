@@ -1,0 +1,185 @@
+Index: pyproject.toml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100755
+--- /dev/null	(date 1674678645762)
++++ b/pyproject.toml	(date 1674678645762)
+@@ -0,0 +1,36 @@
++[build-system]
++requires = [
++    "setuptools>=42",
++    "wheel"
++]
++build-backend = "setuptools.build_meta"
++
++[tool.setuptools]
++packages = ["seth"]
++
++# [build-system]
++# requires = ["poetry-core>=1.0.0"]
++# build-backend = "poetry.core.masonry.api"
++
++[project]  # tool.poetry
++name = "seth"
++version = "0.0.1"
++description = ""
++readme = "README.md"
++license = {text = "GPL-3.0-only"}
++
++[tool.poetry]
++authors = ["Dagmar Ilzhöfer <ilzhoefer@rostlab.org>"]
++license = "AGPL-3.0-only"
++
++[tool.poetry.dependencies]
++python = "^3.8"
++torch = "^1.10.2"
++requests = "^2.27.1"
++transformers = "^4.17.0"
++
++# [tool.poetry.dev-dependencies]
++
++[project.scripts]  # project.scripts  tool.poetry.scripts
++seth = "seth.SETH_1:main"
++
+Index: SETH_1.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/SETH_1.py b/seth/SETH_1.py
+rename from SETH_1.py
+rename to seth/SETH_1.py
+--- a/SETH_1.py	(revision f1e19d4672441aea26de7267757d48bc627c23d9)
++++ b/seth/SETH_1.py	(date 1675398708057)
+@@ -10,6 +10,8 @@
+ import requests
+ import torch.nn as nn
+ import time
++import json
++from typing import Union, Dict, Tuple
+ 
+ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+ print("Using device: {}".format(device))
+@@ -55,7 +57,7 @@
+         for line in fasta_f:
+             # get uniprot ID from header and create new entry
+             if line.startswith('>'):
+-                uniprot_id = line.strip()
++                uniprot_id = line[1:].strip()
+                 sequences[uniprot_id] = ''
+             else:
+                 # repl. all whie-space chars and join seqs spanning multiple lines
+@@ -64,28 +66,27 @@
+     return sequences
+ 
+ 
+-def get_prott5(root_dir):
++def get_prott5(cache_dir: Union[str, Path] = Path("ProtT5_XL_U50")):
+     start=time.time()
+     print("Loading ProtT5...")
+     transformers.logging.set_verbosity_error()
+     #excluded lines are alternative import routes
+-    #cache_dir = root_dir / "ProtT5_XL_U50"
+-    #cache_dir.mkdir(exist_ok=True)
+     transformer_link="Rostlab/prot_t5_xl_half_uniref50-enc" #only load encoder part of ProtT5 in half precision
+-    #model = T5EncoderModel.from_pretrained(transformer_link, cache_dir=cache_dir)
+     if not device.type=='cpu':
+-        model = T5EncoderModel.from_pretrained(transformer_link,torch_dtype=torch.float16)
++        model = T5EncoderModel.from_pretrained(
++            transformer_link,torch_dtype=torch.float16, cache_dir=cache_dir)
+     else:
+-        model = T5EncoderModel.from_pretrained(transformer_link)
++        model = T5EncoderModel.from_pretrained(
++            transformer_link, cache_dir=cache_dir)
+     model = model.to(device)
+     model = model.eval() # run in evaluation mode to ensure determinism
+-    #tokenizer = T5Tokenizer.from_pretrained(transformer_link, do_lower_case=False, cache_dir=cache_dir)
+-    tokenizer = T5Tokenizer.from_pretrained(transformer_link, do_lower_case=False)
++    tokenizer = T5Tokenizer.from_pretrained(
++        transformer_link, do_lower_case=False, cache_dir=cache_dir)
+     print("Loaded ProtT5 in {:.1f}[s]".format(time.time()-start))
+     return model, tokenizer
+ 
+ 
+-def load_CNN_ckeckpoint(root_dir):
++def load_CNN_checkpoint(root_dir):
+     print("Loading SETH_1...")
+     predictor=CNN(1, 1024)
+     checkpoint_dir = root_dir / "CNN"
+@@ -169,6 +170,8 @@
+             for protein_id, (sequence, prediction, confidence, Zscore) in predictions.items()
+             ] 
+               ) )
++    elif form == 'json':
++        write_json(out_path, predictions)
+     else:
+         with open(out_path, 'w+') as out_f:
+             for protein_id, (sequence, prediction, confidence, Zscore) in predictions.items():
+@@ -183,8 +186,19 @@
+     return None
+ 
+ 
++def write_json(json_file: Union[str, Path],
++               predictions: Dict[str, Tuple]) -> None:
++    preds = dict()
++    for _id, (seq, diso, conf, zscores) in predictions.items():
++        preds[_id] = dict(seq=seq, diso_pred=diso.tolist(),
++                          confidence=conf.tolist(),
++                          zscores=zscores.tolist())
++    with Path(json_file).open('w') as f:
++        json.dump(preds, f)
++
++
+ def create_arg_parser():
+-    """"Creates and returns the ArgumentParser object."""
++    """Creates and returns the ArgumentParser object."""
+ 
+     # Instantiate the parser
+     parser = argparse.ArgumentParser(description=(
+@@ -202,7 +216,11 @@
+     #Optional output format argument
+     parser.add_argument('-f', '--format', required=False, type=str,
+                         help='Specify the output format: CAID format (default) or raw CheZOD scores (input: -f Cs).')
+-    
++
++    #Optional argument indicating a directory to store model weights
++    parser.add_argument('-c', '--cache_dir', required=False, type=str,
++                        default='ProtT5_XL_U50',
++                        help='Specify the model weights directory.')
+     return parser
+ 
+ 
+@@ -218,8 +236,8 @@
+     form = args.format
+ 
+     seqs = read_fasta(in_path)
+-    prott5, tokenizer = get_prott5(root_dir)
+-    CNN = load_CNN_ckeckpoint(root_dir)
++    prott5, tokenizer = get_prott5(args.cache_dir)
++    CNN = load_CNN_checkpoint(root_dir)
+     predictions = get_predictions(seqs, prott5, tokenizer, CNN,form)
+     write_predictions(out_path, predictions, form)
+     end=time.time()
+Index: seth.sh
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/seth.sh b/seth.sh
+new file mode 100644
+--- /dev/null	(date 1675276019530)
++++ b/seth.sh	(date 1675276019530)
+@@ -0,0 +1,7 @@
++#!/bin/bash -e
++source /mnt/lsf-nas-1/os-shared/anaconda3/etc/profile.d/conda.sh
++conda activate kaindl_e3
++
++HOME=/mnt/project/kaindl
++
++seth -i $HOME/ppi/ppi_data/v2.1/1:1_small/huri_test.fasta -o $HOME/FoldDock/leo_ppi_huri_test/seth_scores.json -f json -c $HOME/ppi/embed_data/t5_xl_weights
+\ No newline at end of file
+diff --git a/seth/__init__.py b/seth/__init__.py
+new file mode 100644
