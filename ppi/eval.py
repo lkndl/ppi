@@ -118,16 +118,20 @@ def evaluate_model(model, embeddings, dataloaders,
 
     model.eval()
     with torch.no_grad():
-        all_preds, all_labels, all_cc, all_A, all_B = list(), list(), list(), list(), list()
-        for (cclass, dataloader), color in zip(dataloaders.items(), ['blue', 'red', 'yellow']):
+        all_preds, all_labels, all_cc, all_A, all_B = \
+            list(), list(), list(), list(), list()
+        for (cclass, dataloader), color in zip(
+                dataloaders.items(), ['blue', 'red', 'yellow']):
             # print(f'C{cclass}:{len(dataloader)}')
 
             if progress is not None:
                 task = progress.add_task(f'[{color}]C{cclass}', total=len(dataloader))
                 task_ids.append(task)
-                tracker, tracker_kwargs = progress.track, dict(task_id=task)
+                tracker, tracker_kwargs = \
+                    progress.track, dict(task_id=task)
             else:
-                tracker, tracker_kwargs = tqdm, dict(desc=f'C{cclass}', colour=color, leave=False)
+                tracker, tracker_kwargs = \
+                    tqdm, dict(desc=f'C{cclass}', colour=color, leave=False)
 
             metrics = Metrics(bootstraps)
             start_time = perf_counter()

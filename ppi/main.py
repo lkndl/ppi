@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 warnings.simplefilter(action='ignore', category=UserWarning)
 
-from ppi.config import parse, Config
+from ppi.config import parse, Config, TrainMode
 from ppi.metrics import Writer, Metrics
 from ppi.eval import Evaluator, Intervalometer, evaluate_model
 
@@ -316,7 +316,7 @@ def resume(ctx: typer.Context,
            patience: int = typer.Option(200),
            use_tqdm: bool = typer.Option(True),
            ):
-    cfg = parse(ctx)
+    cfg = parse(ctx, mode=TrainMode.resume)
     print(f'using device: {device}')
     checkpoint = torch.load(checkpoint, map_location=device)
     train_loop(cfg, use_tqdm, checkpoint)
@@ -352,9 +352,10 @@ def train(ctx: typer.Context,
           train_tsv: Path = typer.Option(None),
           h5: Path = typer.Option(None),
           epochs: int = typer.Option(2),
+          mode: TrainMode = TrainMode.new,
           use_tqdm: bool = typer.Option(True),
           ) -> None:
-    cfg = parse(ctx)
+    cfg = parse(ctx, mode=mode)
     print(f'T5 PPI v{__version__}\nusing device: {device}')
     train_loop(cfg, use_tqdm=use_tqdm)
 
@@ -435,7 +436,6 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
         for epoch in epoch_tracker(range(epoch, cfg.epochs), **e_kwargs):
             model.train()
             optim.zero_grad()
-            print(f'ppi weight {model.ppi_weight} and acc {model.accuracy_weight}')
 
             if use_tqdm:
                 b_kwargs |= dict(desc=f'epoch {epoch + 1}/{cfg.epochs}',

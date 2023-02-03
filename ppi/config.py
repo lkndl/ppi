@@ -15,10 +15,20 @@ import typer
 from dataclass_wizard import JSONWizard
 
 
-def parse(ctx: typer.Context, write=True):
+class TrainMode(str, Enum):
+    new = 'new'
+    overwrite = 'overwrite'
+    resume = 'resume'
+
+
+def parse(ctx: typer.Context, write=True, mode: TrainMode = TrainMode.new):
     # get a configuration
     path = ctx.params.get('config')
-    if path is not None and (path := Path(path)).is_file():
+    ctx.params['mode'] = mode.value
+    if mode != TrainMode.overwrite and path is not None \
+            and (path := Path(path)).is_file():
+        if mode == TrainMode.new:
+            exit('Config exists, and no overwrite / resume specified')
         cfg = Config.from_file(path, **ctx.params)
     else:
         cfg = Config(**ctx.params)
@@ -177,12 +187,6 @@ class TestParams(SnakeConfig):
         self.model = Path(self.model)
         self.test_tsv = Path(self.test_tsv)
         self.out_path = Path(self.out_path)
-
-
-class TrainMode(str, Enum):
-    new = 'new'
-    overwrite = 'overwrite'
-    resume = 'resume'
 
 
 @dataclass
