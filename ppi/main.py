@@ -449,8 +449,10 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 for _n0, _n1 in zip(n0, n1):
                     z_a = embeddings[_n0].to(device)
                     z_b = embeddings[_n1].to(device)
-
-                    cm, p_hat = model.map_predict(z_a, z_b)
+                    try:
+                        cm, p_hat = model.map_predict(z_a, z_b)
+                    except torch.cuda.OutOfMemoryError:
+                        _print(f'out of memory: {_n0} {z_a.shape} : {_n1} {z_b.shape}')
                     preds.append(p_hat.float().flatten(0))
                     cmaps.append(torch.mean(cm))
 
@@ -467,9 +469,12 @@ def train_loop(cfg, use_tqdm: bool, checkpoint: dict = None):
                 if not batch % 20:
                     writer.add_interval(batch_metrics, 'batch', batch)
 
-                loss.backward()
-                optim.step()
-                optim.zero_grad()
+                try:
+                    loss.backward()
+                    optim.step()
+                    optim.zero_grad()
+                except torch.cuda.OutOfMemoryError:
+                    _print(f'out of memory at backprop for batch {batch}')
                 batch += 1
 
                 if reason := intervalometer(batch):
