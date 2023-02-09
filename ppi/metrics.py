@@ -21,7 +21,7 @@ class Metrics:
         """This returns a tuple, which we can't easily stack -> Tensorify"""
 
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, thresholds=101, **kwargs)
+            super().__init__(*args, thresholds=501, **kwargs)
 
         def compute(self):
             pr, re, th = tmc.BinaryPrecisionRecallCurve.compute(self)

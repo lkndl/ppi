@@ -179,48 +179,65 @@ class WriteMode(str, Enum):
     append = 'a'
 
 
-# @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
+@app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))
 def predict(ctx: typer.Context,
-            model: InteractionModel, dataloader: DataLoader,
-            embeddings: dict[str, torch.Tensor],
-            mode: WriteMode = WriteMode.none, cclass: str = '',
-            ) -> tuple[torch.Tensor, torch.Tensor]:
-    # TODO bare bones, write a TSV, timed
+            model: Path = 'model.tar',
+            in_tsv: Path = 'query.tsv',
+            out_tsv: Path = 'predict.tsv',
+            no_header: bool = typer.Option(False),
+            h5: Path = '/mnt/project/kaindl/ppi/embed_data/apid_huri.h5',
+            mode: WriteMode = WriteMode.exit,
+            ) -> tuple[list, list, list]:
     cfg = parse(ctx, write=False)
-    tsv = Path('predict.tsv')
-    if mode == WriteMode.exit and tsv.is_file():
-        exit(f'{tsv} exists')
-    elif mode.value in 'wa':
-        tsv = tsv.open(mode)
+    if mode == WriteMode.exit and out_tsv.is_file():
+        print(f'{out_tsv} exists!')
+        raise typer.Exit(1)
+    assert mode.value in 'wa', typer.Exit(2)
+    tsv = out_tsv.open(mode)
 
-    if cclass := cclass.strip():
-        cclass = f'\t{cclass}\t'
+    # load the test, separated by class
+    dataloader, seq_ids = get_dataloaders_and_ids(
+        in_tsv, cfg.batch_size, augment=False, shuffle=False,
+        seed=42, no_header=no_header)
+    embeddings = get_embeddings(h5, seq_ids)
 
-    if mode.value == 'w':
-        line = f'batch\thash_A\thash_B\t' + ('cclass\t' if cclass else '') + f'y\tphat\n'
-        print(line, end='')
-        tsv.write(line)
-
+    # actually load the model
+    chk = model
+    if chk.suffix == '.pt':
+        model = torch.jit.load(chk)
+    elif chk.suffix == '.tar':
+        model = InteractionModel(**vars(cfg))
+        state = torch.load(chk, map_location=torch.device('cpu'))['model_state_dict']
+        model.load_state_dict(state)
+    elif chk.suffix == '.sav':
+        model = torch.load(chk)
+    model.to(device)
     model.eval()
-    with torch.no_grad():
-        preds, all_labels = [], []
-        for batch, (n0, n1, labels) in enumerate(dataloader):
-            all_labels.append(labels)
+    lines = list()
 
-            for _n0, _n1, _y in zip(n0, n1, labels):
+    with torch.no_grad():
+        prot_a, prot_b, preds = [], [], []
+        for n0, n1, _ in tqdm(dataloader):
+            prot_a.extend(n0)
+            prot_b.extend(n1)
+
+            for _n0, _n1 in zip(n0, n1):
                 z_a = embeddings[_n0].to(device)
                 z_b = embeddings[_n1].to(device)
                 _, p_hat = model.map_predict(z_a, z_b)
+                preds.append(p_hat.item())
 
                 if mode.value in 'wa':
-                    line = f'{batch}\t{_n0}\t{_n1}{cclass}{_y.item()}\t{p_hat.item():.4f}\n'
-                    tsv.write(line)
-
-                preds.append(p_hat.flatten(0))
+                    line = f'{_n0}\t{_n1}\t{p_hat.item():.4f}\n'
+                    lines.append(line)
+                    if not len(lines) % 1000:
+                        tsv.write(''.join(lines))
+                        lines = list()
 
     if mode.value in 'wa':
+        tsv.write('\n'.join(lines))
         tsv.close()
-    return torch.cat(preds).to(device), torch.cat(all_labels).float().to(device)
+    return prot_a, prot_b, preds
 
 
 @app.command(context_settings=dict(allow_extra_args=True, ignore_unknown_options=True))

@@ -81,12 +81,17 @@ def get_dataloaders_and_ids(tsv_path: Path,
                             batch_size: int = 50,
                             augment: bool = True,
                             id_columns: list[str] = ['hash_A', 'hash_B'],
+                            no_header: bool = False,
                             label_column: str = 'label',
                             split_column: str = None,
                             shuffle: bool = True,
                             seed: int = torch.randint(0, int(1e6), (1,)).item()
                             ) -> tuple[Union[DataLoader, dict[str, DataLoader]], set[str]]:
-    all_pairs = pd.read_csv(tsv_path, sep='\t', header=0)
+    all_pairs = pd.read_csv(tsv_path, sep='\t', header=None if no_header else 0)
+    if no_header:
+        all_pairs.columns = id_columns + list(all_pairs.columns[2:])
+    if label_column not in all_pairs.columns:
+        all_pairs[label_column] = 0
     assert len(id_columns) == 2 and set(id_columns) < set(all_pairs.columns), \
         f'Only exactly two columns from {all_pairs.columns} can contain protein IDs, ' \
         f'but {id_columns} was passed.'
