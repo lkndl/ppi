@@ -161,7 +161,7 @@ def generate_embeddings(model, tokenizer, seqs, device, h5_file: Path = None,
         save_embeddings(bunch, h5_file)
 
     passed_time = time.time() - start
-    avg_time = passed_time / counter
+    avg_time = passed_time / max(1, counter)
     print(f'Total number of per-residue embeddings: {counter}')
     print(f'Time for generating embeddings: {passed_time / 60:.1f}[m]'
           f' ({avg_time:.3f}[s/protein])')
