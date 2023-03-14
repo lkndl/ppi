@@ -14,23 +14,32 @@ packages = ['ppi']
 
 [project]  # tool.poetry
 name = 'ppi'
-version = '0.4.1'
+version = '0.4.2'
 description = ''
-license = {text = 'Apache-2.0'}
+license = { text = 'Apache-2.0' }
 
 [tool.poetry]
+name = 'ppi'
+version = '0.4.2'
+description = ''
 authors = ['Leo Kaindl <leo.kaindl@tum.de>', 'Duc Anh Le <ducanh.le@tum.de>']
 license = 'Apache-2.0'
 
 [tool.poetry.dependencies]
 python = '^3.9.7'
-pytorch = '^1.0.2'
-torch = '^1.11.0'
+#pytorch = '^1.0.2'
+#torch = '^1.11.0'
 biopython = '^1.79'
-ppi_utils = { git = "https://github.com/lkndl/ppi_utils.git" }
+typer = "^0.7.0"
+rich = "^13.3.2"
+ppi_utils = { git = "https://github.com/Rostlab/ppi_utils.git", develop = true }
+#ppi-utils = { path = '/home/quirin/PYTHON/ppi_utils', develop = true }
 
 # [tool.poetry.dev-dependencies]
 
-[project.scripts]  # project.scripts  tool.poetry.scripts
+[project.scripts]
+ppi = 'ppi.main:app'
+
+[tool.poetry.scripts]
 ppi = 'ppi.main:app'
 
