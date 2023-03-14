@@ -27,7 +27,7 @@ class InteractionModel(ModelInteraction):
                              hidden_dim=map_hidden_dim,
                              width=kernel_width)
         super().__init__(embedding, contact,
-                         use_cuda=kwargs.pop('use_cuda', True),
+                         use_cuda=kwargs.pop('use_cuda', torch.cuda.is_available()),
                          **kwargs)
         self.ppi_weight = ppi_weight
         self.accuracy_weight = accuracy_weight
